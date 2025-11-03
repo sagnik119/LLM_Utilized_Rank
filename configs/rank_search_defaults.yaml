@@ -1,0 +1,30 @@
+# Default configuration for rank search
+
+# Validation constraint
+epsilon_percent: 0.1  # Maximum allowed relative metric increase (%)
+
+# Energy threshold search range
+energy_min: 0.80     # Minimum energy threshold to try
+energy_max: 0.9999   # Maximum energy threshold to try
+max_bs_iters: 12     # Binary search iterations (~1e-4 resolution)
+
+# Layer filtering (regex pattern to match layer names)
+# Example patterns:
+#   - All attention layers: "(attn|attention)\.(q_proj|k_proj|v_proj|o_proj)"
+#   - All MLP layers: "mlp\.(up_proj|down_proj|gate_proj|fc1|fc2)"
+#   - Combined: "(attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(up_proj|down_proj|gate_proj))"
+eligible_linear_regex: "(attn|attention)\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(up_proj|down_proj|gate_proj|fc1|fc2)"
+
+# Validation dataset settings
+validation:
+  dataset: wikitext
+  config: wikitext-2-raw-v1
+  split: validation
+  samples: 2000
+  seq_len: 512
+
+# Factorization settings
+factorization:
+  # If null, uses standard criterion: r * (m + d) < m * d
+  # Otherwise, factorizes if (r * (m + d)) / (m * d) < threshold
+  threshold: null

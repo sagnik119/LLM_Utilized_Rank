@@ -1,0 +1,47 @@
+# Configuration for GPT-2 Small (124M parameters)
+
+model:
+  name: gpt2
+  type: causal_lm
+
+# Activation collection settings
+activation_collection:
+  dataset: wikitext
+  config: wikitext-2-raw-v1
+  split: train
+  samples: 50000
+  seq_len: 512
+  batch_size: 1
+
+# Rank search settings
+rank_search:
+  epsilon_percent: 0.1
+  energy_min: 0.80
+  energy_max: 0.9999
+  max_iters: 12
+  
+  # Filter for eligible layers (GPT-2 attention and MLP)
+  layer_filter: "(attn\\.c_attn|attn\\.c_proj|mlp\\.c_fc|mlp\\.c_proj)"
+  
+  validation:
+    dataset: wikitext
+    config: wikitext-2-raw-v1
+    split: validation
+    samples: 2000
+    seq_len: 512
+
+# Compression settings
+compression:
+  factorize_threshold: null  # Use standard criterion
+
+# Fine-tuning settings
+finetune:
+  dataset: wikitext
+  config: wikitext-2-raw-v1
+  epochs: 2
+  learning_rate: 5e-5
+  batch_size: 4
+  max_length: 512
+  warmup_steps: 500
+  logging_steps: 100
+  save_steps: 1000

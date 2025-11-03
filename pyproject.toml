@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utilized-rank-llm"
+version = "0.1.0"
+description = "Utilized-rank analysis and mixed-rank compression for LLMs"
+authors = [{name = "Sagnik Bhattacharya"}]
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.3",
+  "transformers>=4.44",
+  "accelerate>=0.33",
+  "datasets>=2.20",
+  "einops>=0.7",
+  "numpy",
+  "scipy",
+  "tqdm",
+  "pyyaml",
+  "safetensors",
+  "peft>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+  "black>=23.0",
+  "ruff>=0.1.0",
+]
