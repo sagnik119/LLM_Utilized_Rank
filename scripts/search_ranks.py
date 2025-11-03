@@ -31,7 +31,12 @@ def main():
     parser.add_argument("--out", type=str, required=True, help="Output JSON file")
     parser.add_argument("--energy-min", type=float, default=0.8, help="Min energy threshold")
     parser.add_argument("--energy-max", type=float, default=0.9999, help="Max energy threshold")
-    parser.add_argument("--filter", type=str, default=None, help="Regex to filter layer names")
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=r"(attn\.|attention\.|mlp\.)",
+        help="Regex to filter layer names (default: attn/mlp only, excludes lm_head)"
+    )
     args = parser.parse_args()
     
     # Setup device
