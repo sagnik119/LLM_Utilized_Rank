@@ -30,27 +30,185 @@ pip install -e .
 pip install -r requirements.txt
 ```
 
-## Quickstart
+## Complete Pipeline
+
+This repository provides a comprehensive pipeline for utilized rank analysis and compression. Follow these steps in order:
+
+### Step 1: Collect Activation Statistics
+
+Collect X^T X statistics from forward passes on a calibration dataset:
 
 ```bash
-# 1) Collect activation statistics (X^T X per layer) on a text corpus
-python scripts/collect_activations.py --model gpt2 --dataset wikitext --split train --samples 50000 \
-  --seq-len 512 --save stats/gpt2_small_xtx.pt
+python scripts/collect_activations.py \
+  --model gpt2 \
+  --dataset wikitext \
+  --split train \
+  --samples 50000 \
+  --seq-len 512 \
+  --save stats/gpt2_xtx.pt
+```
 
-# 2) Search utilized ranks with epsilon=0.1% per transformation
-python scripts/search_ranks.py --model gpt2 --stats stats/gpt2_small_xtx.pt --epsilon 0.1 \
-  --val-dataset wikitext --val-samples 10000 --out ranks/gpt2_small.json
+### Step 2: Search Optimal Ranks
 
-# 3) Apply compression and save a rank-fixed checkpoint
-python scripts/apply_compression.py --model gpt2 --ranks ranks/gpt2_small.json \
-  --stats stats/gpt2_small_xtx.pt --out ckpts/gpt2_small_urank
+Binary search for optimal ranks with validation constraint (ε=0.1%):
 
-# 4) (Optional) Fine-tune to recover any residual loss
-python scripts/finetune.py --model ckpts/gpt2_small_urank --train-dataset wikitext \
-  --epochs 2 --lr 5e-5 --out ckpts/gpt2_finetuned
+```bash
+python scripts/search_ranks.py \
+  --model gpt2 \
+  --stats stats/gpt2_xtx.pt \
+  --epsilon 0.1 \
+  --val-dataset wikitext \
+  --val-samples 2000 \
+  --out ranks/gpt2_base.json
+```
 
-# 5) Evaluate perplexity
-python scripts/eval_perplexity.py --model ckpts/gpt2_small_urank --dataset wikitext --split test
+### Step 3: Apply Rank Allocation Policy (Optional)
+
+Adjust ranks based on layer type (QKV vs MLP):
+
+```bash
+# List available policies
+python scripts/allocate_ranks.py --list-policies
+
+# Apply QKV-heavier policy (prioritizes attention)
+python scripts/allocate_ranks.py \
+  --in-ranks ranks/gpt2_base.json \
+  --policy qkv_heavier \
+  --out ranks/gpt2_qkv.json \
+  --verbose
+
+# Or use uniform/mlp_heavier policies
+# --policy uniform
+# --policy mlp_heavier
+```
+
+### Step 4: Apply Compression
+
+Transform weights and factorize where beneficial:
+
+```bash
+python scripts/apply_compression.py \
+  --model gpt2 \
+  --ranks ranks/gpt2_qkv.json \
+  --stats stats/gpt2_xtx.pt \
+  --out ckpts/gpt2_compressed
+```
+
+### Step 5: Fine-Tune (Optional but Recommended)
+
+Recover performance using one of three strategies:
+
+**Option A: LoRA Fine-Tuning (Recommended)**
+```bash
+python scripts/finetune_llamafactory.py \
+  --preset lora \
+  --model ckpts/gpt2_compressed \
+  --data wikitext2 \
+  --out outputs/gpt2_lora \
+  --epochs 2 \
+  --lr 2e-4
+```
+
+**Option B: Full Fine-Tuning**
+```bash
+python scripts/finetune_llamafactory.py \
+  --preset full \
+  --model ckpts/gpt2_compressed \
+  --data wikitext2 \
+  --out outputs/gpt2_full \
+  --epochs 2 \
+  --lr 1e-5
+```
+
+**Option C: Freeze Fine-Tuning (Norms + Head only)**
+```bash
+python scripts/finetune_llamafactory.py \
+  --preset freeze \
+  --model ckpts/gpt2_compressed \
+  --data wikitext2 \
+  --out outputs/gpt2_freeze \
+  --epochs 2 \
+  --lr 5e-5
+```
+
+**Option D: Simple Fine-Tuning (HF Trainer)**
+```bash
+python scripts/finetune.py \
+  --model ckpts/gpt2_compressed \
+  --train-dataset wikitext \
+  --epochs 2 \
+  --lr 5e-5 \
+  --out ckpts/gpt2_finetuned
+```
+
+### Step 6: Evaluate
+
+**Option A: Comprehensive Evaluation (lm-eval-harness)**
+```bash
+python scripts/eval_lm_eval.py \
+  --model outputs/gpt2_lora \
+  --tasks wikitext arc_easy hellaswag winogrande piqa \
+  --batch 8 \
+  --out eval_results.json
+```
+
+**Option B: Perplexity Only**
+```bash
+python scripts/eval_perplexity.py \
+  --model outputs/gpt2_lora \
+  --dataset wikitext \
+  --split test \
+  --samples 5000
+```
+
+## Quick Examples
+
+### Basic Pipeline (Uniform ranks)
+```bash
+# 1. Collect stats
+python scripts/collect_activations.py --model gpt2 --dataset wikitext --split train \
+  --samples 50000 --seq-len 512 --save stats/gpt2_xtx.pt
+
+# 2. Search ranks
+python scripts/search_ranks.py --model gpt2 --stats stats/gpt2_xtx.pt \
+  --epsilon 0.1 --out ranks/gpt2.json
+
+# 3. Compress
+python scripts/apply_compression.py --model gpt2 --ranks ranks/gpt2.json \
+  --stats stats/gpt2_xtx.pt --out ckpts/gpt2_compressed
+
+# 4. LoRA fine-tune
+python scripts/finetune_llamafactory.py --preset lora --model ckpts/gpt2_compressed \
+  --data wikitext2 --out outputs/gpt2_lora
+
+# 5. Evaluate
+python scripts/eval_lm_eval.py --model outputs/gpt2_lora \
+  --tasks wikitext arc_easy hellaswag --batch 8 --out eval.json
+```
+
+### Advanced Pipeline (With rank policies)
+```bash
+# 1-2. Same as above (collect & search)
+python scripts/collect_activations.py --model gpt2 --dataset wikitext --split train \
+  --samples 50000 --seq-len 512 --save stats/gpt2_xtx.pt
+python scripts/search_ranks.py --model gpt2 --stats stats/gpt2_xtx.pt \
+  --epsilon 0.1 --out ranks/gpt2_base.json
+
+# 3. Apply QKV-heavier policy
+python scripts/allocate_ranks.py --in-ranks ranks/gpt2_base.json \
+  --policy qkv_heavier --out ranks/gpt2_qkv.json --verbose
+
+# 4. Compress with policy
+python scripts/apply_compression.py --model gpt2 --ranks ranks/gpt2_qkv.json \
+  --stats stats/gpt2_xtx.pt --out ckpts/gpt2_qkv_compressed
+
+# 5. Full fine-tune
+python scripts/finetune_llamafactory.py --preset full \
+  --model ckpts/gpt2_qkv_compressed --data wikitext2 --out outputs/gpt2_full
+
+# 6. Comprehensive eval
+python scripts/eval_lm_eval.py --model outputs/gpt2_full \
+  --tasks wikitext arc_easy hellaswag winogrande piqa boolq --batch 8 --out eval_full.json
 ```
 
 ## Repository Structure
