@@ -1,0 +1,11 @@
+# Uniform rank allocation policy
+# Applies same multiplier to all layers
+
+name: uniform
+description: "Uniform rank allocation across all layers"
+
+multipliers:
+  ".*": 1.0
+
+min_rank: 4
+max_rank: 8192

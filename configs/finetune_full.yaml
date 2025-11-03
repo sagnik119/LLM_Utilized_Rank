@@ -1,0 +1,32 @@
+# Full fine-tuning configuration for LLaMA-Factory
+
+# Model and data
+stage: sft
+model_name_or_path: ckpts/gpt2_small_urank
+dataset: wikitext2
+output_dir: outputs/full
+
+# Fine-tuning type - Full
+finetuning_type: full
+
+# Training hyperparameters
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-5
+num_train_epochs: 2
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+
+# Optimization
+bf16: true  # Use bfloat16 if supported
+fp16: false
+gradient_checkpointing: true
+
+# Logging and saving
+logging_steps: 20
+save_steps: 1000
+save_total_limit: 2
+eval_strategy: "no"
+
+# Other
+seed: 42

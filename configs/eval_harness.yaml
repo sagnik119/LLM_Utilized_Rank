@@ -1,0 +1,25 @@
+# Example evaluation suite configuration for lm-eval-harness
+
+# Model to evaluate
+model: ckpts/gpt2_small_urank
+
+# Evaluation settings
+batch_size: 8
+limit: null  # Set to integer to limit examples per task
+device: null  # Auto-detect, or specify 'cuda' or 'cpu'
+
+# Tasks to evaluate
+# Common tasks:
+#   - wikitext: Language modeling (includes perplexity)
+#   - arc_easy, arc_challenge: Question answering
+#   - hellaswag: Commonsense reasoning
+#   - winogrande: Coreference resolution
+#   - piqa: Physical reasoning
+#   - boolq: Boolean questions
+#   - gsm8k: Math reasoning (requires special tokenizer handling)
+tasks:
+  - wikitext
+  - arc_easy
+  - hellaswag
+  - winogrande
+  - piqa

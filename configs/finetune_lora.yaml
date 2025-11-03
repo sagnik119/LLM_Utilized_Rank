@@ -1,0 +1,36 @@
+# LoRA fine-tuning configuration for LLaMA-Factory
+
+# Model and data
+stage: sft
+model_name_or_path: ckpts/gpt2_small_urank
+dataset: wikitext2
+output_dir: outputs/lora
+
+# PEFT Configuration - LoRA
+finetuning_type: lora
+lora_target: all  # Apply LoRA to all linear layers
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.05
+
+# Training hyperparameters
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-4
+num_train_epochs: 2
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+
+# Optimization
+bf16: true  # Use bfloat16 if supported
+fp16: false
+gradient_checkpointing: true
+
+# Logging and saving
+logging_steps: 20
+save_steps: 1000
+save_total_limit: 2
+eval_strategy: "no"
+
+# Other
+seed: 42

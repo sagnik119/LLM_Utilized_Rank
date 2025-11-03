@@ -1,0 +1,22 @@
+# QKV-heavier rank allocation policy
+# Prioritizes attention projections (Q/K/V) over MLP layers
+
+name: qkv_heavier
+description: "QKV-heavier: prioritize attention projections over MLP"
+
+multipliers:
+  # Attention projections - higher ranks
+  "(attn|attention)\\.(q_proj|query)": 1.25
+  "(attn|attention)\\.(k_proj|key)": 1.10
+  "(attn|attention)\\.(v_proj|value)": 1.25
+  "(attn|attention)\\.(o_proj|output)": 1.00
+  
+  # MLP projections - lower ranks
+  "mlp\\.(up_proj|gate_proj|c_fc)": 0.85
+  "mlp\\.(down_proj|c_proj)": 0.85
+  
+  # Default fallback
+  ".*": 1.0
+
+min_rank: 4
+max_rank: 8192

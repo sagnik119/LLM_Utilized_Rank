@@ -1,0 +1,19 @@
+# MLP-heavier rank allocation policy
+# Prioritizes MLP projections over attention layers
+
+name: mlp_heavier
+description: "MLP-heavier: prioritize MLP projections over attention"
+
+multipliers:
+  # MLP projections - higher ranks
+  "mlp\\.(up_proj|gate_proj|c_fc)": 1.25
+  "mlp\\.(down_proj|c_proj)": 1.10
+  
+  # Attention projections - lower ranks
+  "(attn|attention)\\.(q_proj|k_proj|v_proj|o_proj|query|key|value|output)": 0.85
+  
+  # Default fallback
+  ".*": 1.0
+
+min_rank: 4
+max_rank: 8192
