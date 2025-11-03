@@ -86,13 +86,20 @@ class ActivationStatsCollector:
         Returns:
             self for method chaining
         """
+        layer_count = 0
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                # Use lambda with default argument to capture name
-                hook = module.register_forward_pre_hook(
-                    lambda mod, inp, n=name: self._hook(n, mod, inp)
-                )
+                # Create a closure to properly capture the name
+                def make_hook(layer_name):
+                    def hook_fn(mod, inp):
+                        return self._hook(layer_name, mod, inp)
+                    return hook_fn
+                
+                hook = module.register_forward_pre_hook(make_hook(name))
                 self._hooks.append(hook)
+                layer_count += 1
+        
+        print(f"Registered hooks on {layer_count} Linear layers")
         return self
 
     def stop(self) -> Dict[str, LayerStat]:
