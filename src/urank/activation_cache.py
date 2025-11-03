@@ -3,12 +3,22 @@ Activation statistics collection for subspace analysis.
 
 This module provides hooks to efficiently accumulate X^T X (input covariance)
 for each Linear layer without storing full activations.
+
+Supports both standard nn.Linear and GPT-2's Conv1D layers.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Union
 import torch
 import torch.nn as nn
+
+# Import Conv1D for GPT-2 compatibility
+try:
+    from transformers.models.gpt2.modeling_gpt2 import Conv1D
+    HAS_CONV1D = True
+except ImportError:
+    Conv1D = None
+    HAS_CONV1D = False
 
 
 @dataclass
@@ -55,13 +65,15 @@ class ActivationStatsCollector:
         self.stats: Dict[str, LayerStat] = {}
         self._hooks: List[torch.utils.hooks.RemovableHandle] = []
 
-    def _hook(self, name: str, module: nn.Linear, inputs):
+    def _hook(self, name: str, module: Union[nn.Linear, 'Conv1D'], inputs):
         """
         Forward pre-hook to accumulate X^T X for a layer.
         
+        Handles both nn.Linear and GPT-2 Conv1D layers.
+        
         Args:
             name: Qualified name of the layer
-            module: Linear module
+            module: Linear or Conv1D module
             inputs: Input tuple from forward pass
         """
         (x,) = inputs  # [..., in_features]
@@ -88,7 +100,12 @@ class ActivationStatsCollector:
         """
         layer_count = 0
         for name, module in self.model.named_modules():
-            if isinstance(module, nn.Linear):
+            # Check for both nn.Linear and Conv1D (GPT-2)
+            is_target = isinstance(module, nn.Linear)
+            if HAS_CONV1D and Conv1D is not None:
+                is_target = is_target or isinstance(module, Conv1D)
+            
+            if is_target:
                 # Create a closure to properly capture the name
                 def make_hook(layer_name):
                     def hook_fn(mod, inp):
@@ -99,7 +116,7 @@ class ActivationStatsCollector:
                 self._hooks.append(hook)
                 layer_count += 1
         
-        print(f"Registered hooks on {layer_count} Linear layers")
+        print(f"Registered hooks on {layer_count} Linear/Conv1D layers")
         return self
 
     def stop(self) -> Dict[str, LayerStat]:
