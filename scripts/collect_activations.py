@@ -52,12 +52,11 @@ def main():
     ds = load_dataset(args.dataset, args.config)[args.split]
     
     # Process samples
-    print(f"Collecting statistics from {args.samples} samples...")
-    seen = 0
+    print(f"Collecting statistics from {args.samples} examples...")
     
     with torch.no_grad():
-        for ex in tqdm(ds, total=min(args.samples, len(ds))):
-            if seen >= args.samples:
+        for i, ex in enumerate(tqdm(ds, total=min(args.samples, len(ds)))):
+            if i >= args.samples:
                 break
             
             txt = ex["text"]
@@ -74,8 +73,6 @@ def main():
             
             # Forward pass (activations captured by hooks)
             model(ids)
-            
-            seen += ids.numel()
     
     # Stop collection and get statistics
     stats = collector.stop()

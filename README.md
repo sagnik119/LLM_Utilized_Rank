@@ -43,7 +43,7 @@ python scripts/collect_activations.py \
   --model gpt2 \
   --dataset wikitext \
   --split train \
-  --samples 50000 \
+  --samples 2000 \
   --seq-len 512 \
   --save stats/gpt2_xtx.pt
 ```
