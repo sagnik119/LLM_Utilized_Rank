@@ -5,6 +5,7 @@ This module provides utilities for:
 - Applying compression to all layers based on rank search results
 - Deciding whether to factorize or keep transformed weights
 - Replacing layers with low-rank factorizations
+- Supports both nn.Linear and GPT-2 Conv1D layers
 """
 
 from typing import Dict, Optional
@@ -14,6 +15,14 @@ import torch.nn as nn
 from .transform import transform_weight_ps_pt, factorize_rank, should_factorize
 from .subspace import topk_from_xtx, projector_from_vecs
 from .instrumentation import get_parent_and_attr
+
+# Import Conv1D for GPT-2 compatibility
+try:
+    from transformers.models.gpt2.modeling_gpt2 import Conv1D
+    HAS_CONV1D = True
+except ImportError:
+    Conv1D = None
+    HAS_CONV1D = False
 
 
 def apply_compression(
@@ -47,11 +56,14 @@ def apply_compression(
         >>> apply_compression(model, xtx_map, ranks)
         >>> model.save_pretrained("compressed_model")
     """
-    # Build name -> module mapping for Linear layers
-    name_to_module = {
-        n: m for n, m in model.named_modules() 
-        if isinstance(m, nn.Linear)
-    }
+    # Build name -> module mapping for Linear and Conv1D layers
+    name_to_module = {}
+    for n, m in model.named_modules():
+        is_target = isinstance(m, nn.Linear)
+        if HAS_CONV1D and Conv1D is not None:
+            is_target = is_target or isinstance(m, Conv1D)
+        if is_target:
+            name_to_module[n] = m
     
     for name, cfg in ranks.items():
         if name not in name_to_module:
@@ -62,39 +74,47 @@ def apply_compression(
             print(f"Warning: No statistics for layer {name}")
             continue
         
-        lin: nn.Linear = name_to_module[name]
+        lin = name_to_module[name]
         xtx = xtx_map[name]
+        
+        # Check if this is a Conv1D layer
+        is_conv1d = HAS_CONV1D and Conv1D is not None and isinstance(lin, Conv1D)
+        
+        # Get weight as (m, d) regardless of module type
+        if is_conv1d:
+            W = lin.weight.data.T.contiguous()
+        else:
+            W = lin.weight.data
+        m, d = W.shape
         
         # Compute input subspace projector
         if cfg.get("e_S") is not None:
-            V_S, _ = topk_from_xtx(xtx, cfg["e_S"])
+            V_S, _ = topk_from_xtx(xtx.to(W.device), cfg["e_S"])
         else:
             # Use k_S directly if energy not stored
-            evals, evecs = torch.linalg.eigh(xtx)
+            evals, evecs = torch.linalg.eigh(xtx.to(W.device))
             idx = torch.argsort(evals, descending=True)
             V_S = evecs[:, idx][:, :cfg["k_S"]]
         
         P_S = projector_from_vecs(V_S)
         
         # Compute output subspace projector
-        W = lin.weight.data
         ttx = W @ xtx.to(W.device) @ W.T
         
         if cfg.get("e_T") is not None:
-            V_T, _ = topk_from_xtx(ttx.cpu(), cfg["e_T"])
+            V_T, _ = topk_from_xtx(ttx, cfg["e_T"])
         else:
             # Use k_T directly
-            evals, evecs = torch.linalg.eigh(ttx.cpu())
+            evals, evecs = torch.linalg.eigh(ttx)
             idx = torch.argsort(evals, descending=True)
             V_T = evecs[:, idx][:, :cfg["k_T"]]
         
         P_T = projector_from_vecs(V_T)
         
-        # Transform weight
-        W_prime = transform_weight_ps_pt(lin, P_S, P_T)
+        # Transform weight (W is already in (m, d) format)
+        W_prime = P_T.to(W) @ W @ P_S.to(W)
         
         # Decide whether to factorize
-        m, d = W_prime.shape
         r = cfg["r"]
         
         # Check if factorization is beneficial
@@ -129,7 +149,11 @@ def apply_compression(
                   f"[{param_ratio:.2%} params]")
         else:
             # Just update weight with transformed version
-            lin.weight.data.copy_(W_prime)
+            if is_conv1d:
+                # Transpose back for Conv1D storage
+                lin.weight.data.copy_(W_prime.T)
+            else:
+                lin.weight.data.copy_(W_prime)
             print(f"Transformed {name}: ({m}, {d}) with r={r} (kept as single layer)")
 
 

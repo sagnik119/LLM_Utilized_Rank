@@ -56,7 +56,7 @@ Binary search for optimal ranks with validation constraint (ε=0.1%):
 python scripts/search_ranks.py \
   --model gpt2 \
   --stats stats/gpt2_xtx.pt \
-  --epsilon 0.1 \
+  --epsilon 2.0 \
   --val-dataset wikitext \
   --val-samples 2000 \
   --out ranks/gpt2_base.json
@@ -93,6 +93,16 @@ python scripts/apply_compression.py \
   --stats stats/gpt2_xtx.pt \
   --out ckpts/gpt2_compressed
 ```
+
+<!-- OR
+
+```bash
+python scripts/apply_compression.py \
+  --model gpt2 \
+  --ranks ranks/gpt2_base.json \
+  --stats stats/gpt2_xtx.pt \
+  --out ckpts/gpt2_compressed
+``` -->
 
 ### Step 5: Fine-Tune (Optional but Recommended)
 
