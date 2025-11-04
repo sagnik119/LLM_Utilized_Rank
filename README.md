@@ -104,6 +104,8 @@ python scripts/apply_compression.py \
   --out ckpts/gpt2_compressed
 ``` -->
 
+### TODO: Include an eval step here after compression and before fine tuning
+
 ### Step 5: Fine-Tune (Optional but Recommended)
 
 Recover performance using one of three strategies:
@@ -113,11 +115,13 @@ Recover performance using one of three strategies:
 python scripts/finetune_llamafactory.py \
   --preset lora \
   --model ckpts/gpt2_compressed \
+  --data-dir /scratch/users/sagnikb/LLaMA-Factory/data \
   --data wikitext2 \
   --out outputs/gpt2_lora \
   --epochs 2 \
-  --lr 2e-4
+  --lr 1e-4
 ```
+### TODO: wikitext2 is basically continued pre training, may hurt performance on tasks, use SFT dataset for fine tuning
 
 **Option B: Full Fine-Tuning**
 ```bash
@@ -251,3 +255,15 @@ See `configs/*.yaml` to describe datasets, tokenization, ε, per-layer groups (e
 ## License
 
 See LICENSE file for details.
+
+### Things needed before llama-factory installation
+export CFLAGS="-std=c99"
+export CFLAGS="-std=c99 -D_POSIX_C_SOURCE=200809L"
+pip uninstall -y av
+pip install setuptools_scm scikit-build-core cmake ninja
+conda install -c conda-forge sentencepiece tiktoken
+conda install -c conda-forge soxr librosa
+module load gcc/14.2.0
+conda install -c conda-forge scipy numpy libgcc-ng libstdcxx-ng
+conda install -c conda-forge soxr-python
+conda install -c conda-forge libiconv

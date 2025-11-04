@@ -54,16 +54,28 @@ def main():
     parser.add_argument(
         "--batch-size", type=int, default=None, help="Override batch size"
     )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Absolute path to LLaMA-Factory data directory (contains dataset_info.json)",
+    )
     args = parser.parse_args()
 
-    # Map presets to config files
+    # Map presets to config files (or allow direct path if --preset is a file)
     PRESETS = {
         "lora": "configs/finetune_lora.yaml",
         "full": "configs/finetune_full.yaml",
         "freeze": "configs/finetune_freeze.yaml",
     }
 
-    cfg_path = PRESETS[args.preset]
+    # Support both preset names and direct YAML paths
+    if args.preset in PRESETS:
+        cfg_path = PRESETS[args.preset]
+    elif os.path.exists(args.preset):
+        cfg_path = args.preset
+    else:
+        print(f"Error: Unknown preset '{args.preset}' and file not found")
+        sys.exit(1)
     
     # Check if preset config exists
     if not os.path.exists(cfg_path):
@@ -93,6 +105,11 @@ def main():
         with open(args.cfg) as f:
             override = yaml.safe_load(f)
         cfg.update(override)
+
+    # Set dataset_dir if provided (for LLaMA-Factory to find dataset_info.json)
+    if args.data_dir:
+        cfg["dataset_dir"] = os.path.abspath(args.data_dir)
+        print(f"Using dataset directory: {cfg['dataset_dir']}")
 
     # Create output directory and save resolved config
     os.makedirs(args.out, exist_ok=True)
