@@ -5,16 +5,25 @@ This module provides utilities for:
 - Searching for optimal subspace dimensions via binary search
 - Validating rank choices against perplexity/accuracy constraints
 - Computing utilized ranks from subspace dimensions
+- Supports both nn.Linear and GPT-2 Conv1D layers
 """
 
 from dataclasses import dataclass
-from typing import Dict, Callable, Optional
+from typing import Dict, Callable, Optional, Union
 import torch
 import torch.nn as nn
 
 from .subspace import topk_from_xtx, projector_from_vecs
 from .transform import transform_weight_ps_pt
 from .utils import eval_no_grad
+
+# Import Conv1D for GPT-2 compatibility
+try:
+    from transformers.models.gpt2.modeling_gpt2 import Conv1D
+    HAS_CONV1D = True
+except ImportError:
+    Conv1D = None
+    HAS_CONV1D = False
 
 
 @dataclass
@@ -90,16 +99,15 @@ class RankSearcher:
         delta = 100.0 * (new_metric - base_metric) / max(base_metric, 1e-6)
         return delta <= self.eps
 
-    def search_layer(self, name: str, linear: nn.Linear, max_iters: int = 12) -> RankResult:
+    def search_layer(self, name: str, linear: nn.Module, max_iters: int = 12) -> RankResult:
         """
         Binary search for optimal energy thresholds for a single layer.
         
-        Searches for the lowest (e_S, e_T) pair that maintains validation
-        metric within epsilon. Uses same threshold for both subspaces for simplicity.
+        Supports both nn.Linear and GPT-2 Conv1D layers.
         
         Args:
             name: Qualified name of the layer
-            linear: Linear module to search
+            linear: Linear or Conv1D module to search
             max_iters: Maximum binary search iterations (default: 12, ~1e-4 resolution)
             
         Returns:
@@ -111,11 +119,16 @@ class RankSearcher:
         
         if name not in self.xtx_map:
             # Layer not in statistics - return full rank
-            d = linear.in_features
-            m = linear.out_features
+            d = getattr(linear, "in_features", linear.weight.shape[1])
+            m = getattr(linear, "out_features", linear.weight.shape[0])
             return RankResult(k_S=d, k_T=m, r=min(d, m))
         
         xtx = self.xtx_map[name]
+        
+        # Get weight - handle Conv1D (has shape (in, out) instead of (out, in))
+        W = linear.weight.data if hasattr(linear, "weight") else linear.w.data
+        if W.shape[0] < W.shape[1]:  # GPT-2 Conv1D convention
+            W = W.T
         
         # Binary search on energy threshold
         lo, hi = self.energy_min, self.energy_max
@@ -131,15 +144,19 @@ class RankSearcher:
             P_S = projector_from_vecs(V_S)
             
             # Infer output subspace: T^T T = W · (X^T X) · W^T
-            W = linear.weight.data
             ttx = W @ xtx.to(W.device) @ W.T
             V_T, k_T = topk_from_xtx(ttx.cpu(), e_T)
             P_T = projector_from_vecs(V_T)
             
             # Save and transform weight
             W_save = W.clone()
-            W_prime = transform_weight_ps_pt(linear, P_S, P_T)
-            linear.weight.data.copy_(W_prime)
+            W_prime = P_T.to(W) @ W @ P_S.to(W)
+            
+            # Apply transformed weight back to module
+            if hasattr(linear, "weight"):
+                linear.weight.data.copy_(W_prime)
+            else:  # Conv1D
+                linear.w.data.copy_(W_prime.T)
             
             # Evaluate
             with eval_no_grad(self.model):
@@ -148,7 +165,10 @@ class RankSearcher:
             ok = self._metric_ok(base, m_new)
             
             # Restore original weight
-            linear.weight.data.copy_(W_save)
+            if hasattr(linear, "weight"):
+                linear.weight.data.copy_(W_save)
+            else:  # Conv1D
+                linear.w.data.copy_(W_save.T)
             
             if ok:
                 # Transformation acceptable - try more aggressive (lower energy)
@@ -161,8 +181,8 @@ class RankSearcher:
         
         if best is None:
             # No acceptable transformation found - use full rank
-            d = linear.in_features
-            m = linear.out_features
+            d = getattr(linear, "in_features", W.shape[1])
+            m = getattr(linear, "out_features", W.shape[0])
             return RankResult(k_S=d, k_T=m, r=min(d, m))
         
         k_S, k_T = best
@@ -173,7 +193,7 @@ class RankSearcher:
     
     def search_all_layers(self, layer_filter: Optional[Callable[[str], bool]] = None) -> Dict[str, RankResult]:
         """
-        Search optimal ranks for all eligible layers.
+        Search optimal ranks for all eligible Linear/Conv1D layers.
         
         Args:
             layer_filter: Optional function to filter layer names (default: all in xtx_map)
@@ -184,7 +204,12 @@ class RankSearcher:
         results = {}
         
         for name, module in self.model.named_modules():
-            if not isinstance(module, nn.Linear):
+            # Check for both nn.Linear and Conv1D (GPT-2)
+            is_target = isinstance(module, nn.Linear)
+            if HAS_CONV1D and Conv1D is not None:
+                is_target = is_target or isinstance(module, Conv1D)
+            
+            if not is_target:
                 continue
             if name not in self.xtx_map:
                 continue
@@ -192,8 +217,11 @@ class RankSearcher:
                 continue
             
             print(f"Searching layer: {name}")
-            result = self.search_layer(name, module)
-            results[name] = result
-            print(f"  -> k_S={result.k_S}, k_T={result.k_T}, r={result.r}")
+            try:
+                result = self.search_layer(name, module)
+                results[name] = result
+                print(f"  -> k_S={result.k_S}, k_T={result.k_T}, r={result.r}")
+            except Exception as e:
+                print(f"[WARN] Skipping {name}: {e}")
         
         return results
