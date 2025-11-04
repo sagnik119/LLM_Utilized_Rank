@@ -20,7 +20,6 @@ DATASET_TEMPLATES = {
         "hf_hub_url": "wikitext",
         "subset": "wikitext-2-raw-v1",
         "split": "train",
-        "formatting": "alpaca",
         "columns": {
             "prompt": "text"
         }
@@ -29,7 +28,6 @@ DATASET_TEMPLATES = {
         "hf_hub_url": "wikitext",
         "subset": "wikitext-103-raw-v1",
         "split": "train",
-        "formatting": "alpaca",
         "columns": {
             "prompt": "text"
         }
@@ -37,9 +35,17 @@ DATASET_TEMPLATES = {
     "openwebtext": {
         "hf_hub_url": "openwebtext",
         "split": "train",
-        "formatting": "alpaca",
         "columns": {
             "prompt": "text"
+        }
+    },
+    "alpaca_en": {
+        "hf_hub_url": "tatsu-lab/alpaca",
+        "formatting": "alpaca",
+        "columns": {
+            "prompt": "instruction",
+            "query": "input",
+            "response": "output"
         }
     }
 }
@@ -91,6 +97,9 @@ def main():
     print("\nAvailable datasets:")
     for name in sorted(dataset_info.keys()):
         print(f"  - {name}")
+    
+    print("\nNote: WikiText datasets are for pre-training (language modeling).")
+    print("For supervised fine-tuning, use instruction datasets like alpaca_en.")
 
 
 if __name__ == "__main__":

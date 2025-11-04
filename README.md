@@ -106,6 +106,9 @@ python scripts/apply_compression.py \
 
 ### TODO: Include an eval step here after compression and before fine tuning
 
+### Step 4: Merge new datasets information
+python scripts/setup_llamafactory_datasets.py   --data-dir /scratch/users/sagnikb/LLaMA-Factory/data   --merge
+
 ### Step 5: Fine-Tune (Optional but Recommended)
 
 Recover performance using one of three strategies:
