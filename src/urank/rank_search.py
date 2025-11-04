@@ -125,10 +125,16 @@ class RankSearcher:
         
         xtx = self.xtx_map[name]
         
-        # Get weight - handle Conv1D (has shape (in, out) instead of (out, in))
-        W = linear.weight.data if hasattr(linear, "weight") else linear.w.data
-        if W.shape[0] < W.shape[1]:  # GPT-2 Conv1D convention
-            W = W.T
+        # Check if this is a Conv1D layer (GPT-2)
+        is_conv1d = HAS_CONV1D and Conv1D is not None and isinstance(linear, Conv1D)
+        
+        # Get weight as (m, d) regardless of module type
+        if is_conv1d:
+            # Conv1D stores as (in, out) => transpose to (out, in)
+            W = linear.weight.data.T.contiguous()
+        else:
+            W = linear.weight.data
+        m, d = W.shape
         
         # Binary search on energy threshold
         lo, hi = self.energy_min, self.energy_max
@@ -139,24 +145,30 @@ class RankSearcher:
             # Use same energy for both subspaces
             e_S = e_T = (lo + hi) / 2
             
-            # Compute input subspace
-            V_S, k_S = topk_from_xtx(xtx, e_S)
+            # Compute input subspace (stays on CUDA if xtx is on CUDA)
+            V_S, k_S = topk_from_xtx(xtx.to(W.device), e_S)
             P_S = projector_from_vecs(V_S)
             
             # Infer output subspace: T^T T = W · (X^T X) · W^T
             ttx = W @ xtx.to(W.device) @ W.T
-            V_T, k_T = topk_from_xtx(ttx.cpu(), e_T)
+            V_T, k_T = topk_from_xtx(ttx, e_T)  # No .cpu() - stay on device
             P_T = projector_from_vecs(V_T)
             
-            # Save and transform weight
-            W_save = W.clone()
+            # Save original weight in native format
+            if is_conv1d:
+                W_native_save = linear.weight.data.clone()
+            else:
+                W_native_save = linear.weight.data.clone()
+            
+            # Transform weight
             W_prime = P_T.to(W) @ W @ P_S.to(W)
             
-            # Apply transformed weight back to module
-            if hasattr(linear, "weight"):
+            # Apply transformed weight back to module in native format
+            if is_conv1d:
+                # Transpose back for Conv1D storage
+                linear.weight.data.copy_(W_prime.T)
+            else:
                 linear.weight.data.copy_(W_prime)
-            else:  # Conv1D
-                linear.w.data.copy_(W_prime.T)
             
             # Evaluate
             with eval_no_grad(self.model):
@@ -165,10 +177,7 @@ class RankSearcher:
             ok = self._metric_ok(base, m_new)
             
             # Restore original weight
-            if hasattr(linear, "weight"):
-                linear.weight.data.copy_(W_save)
-            else:  # Conv1D
-                linear.w.data.copy_(W_save.T)
+            linear.weight.data.copy_(W_native_save)
             
             if ok:
                 # Transformation acceptable - try more aggressive (lower energy)
@@ -181,8 +190,6 @@ class RankSearcher:
         
         if best is None:
             # No acceptable transformation found - use full rank
-            d = getattr(linear, "in_features", W.shape[1])
-            m = getattr(linear, "out_features", W.shape[0])
             return RankResult(k_S=d, k_T=m, r=min(d, m))
         
         k_S, k_T = best
