@@ -26,22 +26,22 @@ from src.urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
 
 def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
     """Load and tokenize a dataset."""
-    # Common dataset mappings
+    # Common dataset mappings - use web download for Alpaca to avoid JSON errors
     DATASET_CONFIGS = {
-        "alpaca_en": ("yahma/alpaca-cleaned", "train"),
-        "alpaca_gpt4": ("vicgalle/alpaca-gpt4", "train"),
+        "alpaca_en": ("tatsu-lab/alpaca", None, "train"),
+        "alpaca_gpt4": ("vicgalle/alpaca-gpt4", None, "train"),
         "wikitext2": ("wikitext", "wikitext-2-raw-v1", "train"),
     }
     
     if dataset_name in DATASET_CONFIGS:
         config = DATASET_CONFIGS[dataset_name]
-        if len(config) == 3:
-            ds = load_dataset(config[0], config[1])[config[2]]
+        if config[1] is not None:
+            ds = load_dataset(config[0], config[1], split=config[2])
         else:
-            ds = load_dataset(config[0])[config[1]]
+            ds = load_dataset(config[0], split=config[2])
     else:
         # Try loading directly
-        ds = load_dataset(dataset_name)[split]
+        ds = load_dataset(dataset_name, split=split)
     
     # Tokenize
     def tokenize_function(examples):
