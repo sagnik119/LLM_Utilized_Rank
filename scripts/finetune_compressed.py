@@ -86,6 +86,7 @@ def main():
     
     # Load model with custom class
     model = GPT2CompressedLMHeadModel.from_pretrained(args.model)
+    model = model.to("cuda" if torch.cuda.is_available() else "cpu")  # PATCH 1: Move to CUDA immediately
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
     # Set pad token
@@ -108,6 +109,7 @@ def main():
         )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
+        model.train()  # PATCH 4: Explicitly set to training mode
     
     elif args.preset == "full":
         print("\nFull fine-tuning (all parameters trainable)")
@@ -141,9 +143,9 @@ def main():
         logging_steps=20,
         save_steps=1000,
         save_total_limit=2,
-        bf16=torch.cuda.is_bf16_supported(),
-        fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
-        gradient_checkpointing=True,
+        bf16=False,                    # PATCH 3: Disable for stability
+        fp16=False,                    # PATCH 3: Disable for stability
+        gradient_checkpointing=False,  # PATCH 2: Disable to fix gradient flow
         report_to="none",
     )
     
