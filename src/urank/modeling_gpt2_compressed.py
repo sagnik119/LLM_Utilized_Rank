@@ -128,48 +128,89 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         """
         Load a compressed GPT-2 model with factorized layers.
         
-        This method first loads the model using the parent class, then
-        converts any Sequential(Linear, Linear) modules to FactorizedLinear.
+        This method detects factorized state dict keys and rebuilds the architecture accordingly.
         """
-        # Load config first
+        import os
+        from safetensors.torch import load_file
+        
+        # Load state dict to inspect structure
+        model_path = pretrained_model_name_or_path
+        safetensors_path = os.path.join(model_path, "model.safetensors")
+        pytorch_path = os.path.join(model_path, "pytorch_model.bin")
+        
+        if os.path.exists(safetensors_path):
+            state_dict = load_file(safetensors_path)
+            print(f"Loaded state dict from safetensors")
+        elif os.path.exists(pytorch_path):
+            state_dict = torch.load(pytorch_path, map_location="cpu")
+            print(f"Loaded state dict from pytorch_model.bin")
+        else:
+            # Fall back to standard loading
+            return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        
+        # Detect factorized layers by looking for .0.weight and .1.weight keys
+        factorized_layers = set()
+        for key in state_dict.keys():
+            if ".0.weight" in key:
+                # Extract base layer name (e.g., "transformer.h.0.attn.c_attn")
+                base_key = key.replace(".0.weight", "")
+                factorized_layers.add(base_key)
+        
+        print(f"Detected {len(factorized_layers)} factorized layers")
+        
+        # Load config
         config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
         
-        # Create model instance
-        model = cls(config)
+        # Create standard model first
+        model = super(GPT2CompressedLMHeadModel, cls).__init__(config)
         
-        # Load state dict
-        try:
-            import os
-            model_path = pretrained_model_name_or_path
+        # Now replace factorized layers with FactorizedLinear modules
+        for layer_name in factorized_layers:
+            # Get the weights
+            weight_0_key = f"{layer_name}.0.weight"
+            weight_1_key = f"{layer_name}.1.weight"
+            bias_1_key = f"{layer_name}.1.bias"
             
-            # Try safetensors first, then pytorch_model.bin
-            from safetensors.torch import load_file
-            
-            safetensors_path = os.path.join(model_path, "model.safetensors")
-            pytorch_path = os.path.join(model_path, "pytorch_model.bin")
-            
-            if os.path.exists(safetensors_path):
-                state_dict = load_file(safetensors_path)
-                print(f"Loaded state dict from safetensors")
-            elif os.path.exists(pytorch_path):
-                state_dict = torch.load(pytorch_path, map_location="cpu")
-                print(f"Loaded state dict from pytorch_model.bin")
-            else:
-                # Fall back to parent's loading
-                return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-            
-            # Load state dict with strict=False to handle factorized keys
-            missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            
-            if missing:
-                print(f"Missing keys: {len(missing)}")
-            if unexpected:
-                print(f"Unexpected keys: {len(unexpected)}")
-            
-        except Exception as e:
-            print(f"Error loading custom: {e}")
-            print("Falling back to parent's from_pretrained")
-            return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+            if weight_0_key in state_dict and weight_1_key in state_dict:
+                A_weight = state_dict[weight_0_key]  # (r, d)
+                B_weight = state_dict[weight_1_key]  # (m, r)
+                B_bias = state_dict.get(bias_1_key)  # (m,)
+                
+                # Create FactorizedLinear
+                factorized = FactorizedLinear(
+                    in_features=A_weight.shape[1],  # d
+                    out_features=B_weight.shape[0],  # m
+                    rank=A_weight.shape[0],          # r
+                    bias=B_bias is not None
+                )
+                
+                # Load weights
+                factorized.A.weight.data = A_weight
+                factorized.B.weight.data = B_weight
+                if B_bias is not None:
+                    factorized.B.bias.data = B_bias
+                
+                # Navigate to parent and replace
+                parts = layer_name.split(".")
+                parent = model
+                for part in parts[:-1]:
+                    if part.isdigit():
+                        parent = parent[int(part)]
+                    else:
+                        parent = getattr(parent, part)
+                
+                setattr(parent, parts[-1], factorized)
+                print(f"Replaced {layer_name} with FactorizedLinear(rank={factorized.rank})")
+        
+        # Load remaining (non-factorized) weights
+        # Filter out factorized keys
+        filtered_state_dict = {
+            k: v for k, v in state_dict.items()
+            if not any(f"{layer}." in k for layer in factorized_layers)
+        }
+        
+        missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
+        print(f"Loaded non-factorized weights (missing: {len(missing)}, unexpected: {len(unexpected)})")
         
         return model
 
