@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""
+Fine-tune a compressed model with factorized layers using PEFT.
+
+This script uses the custom GPT2CompressedLMHeadModel to properly load
+factorized weights, then applies LoRA/Full/Freeze fine-tuning.
+
+Usage:
+    python scripts/finetune_compressed.py --preset lora \
+        --model ckpts/gpt2_compressed --data alpaca_en --out outputs/lora_run
+"""
+
+import argparse
+import os
+import sys
+import torch
+from transformers import AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling
+from datasets import load_dataset
+from peft import get_peft_model, LoraConfig, TaskType
+
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from src.urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
+
+
+def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
+    """Load and tokenize a dataset."""
+    # Common dataset mappings
+    DATASET_CONFIGS = {
+        "alpaca_en": ("yahma/alpaca-cleaned", "train"),
+        "alpaca_gpt4": ("vicgalle/alpaca-gpt4", "train"),
+        "wikitext2": ("wikitext", "wikitext-2-raw-v1", "train"),
+    }
+    
+    if dataset_name in DATASET_CONFIGS:
+        config = DATASET_CONFIGS[dataset_name]
+        if len(config) == 3:
+            ds = load_dataset(config[0], config[1])[config[2]]
+        else:
+            ds = load_dataset(config[0])[config[1]]
+    else:
+        # Try loading directly
+        ds = load_dataset(dataset_name)[split]
+    
+    # Tokenize
+    def tokenize_function(examples):
+        # Handle instruction datasets
+        if "instruction" in examples:
+            texts = []
+            for i in range(len(examples["instruction"])):
+                text = f"### Instruction: {examples['instruction'][i]}\n"
+                if "input" in examples and examples["input"][i]:
+                    text += f"### Input: {examples['input'][i]}\n"
+                text += f"### Response: {examples['output'][i]}"
+                texts.append(text)
+            return tokenizer(texts, truncation=True, max_length=512)
+        # Handle text datasets
+        elif "text" in examples:
+            return tokenizer(examples["text"], truncation=True, max_length=512)
+        else:
+            raise ValueError(f"Unknown dataset format: {examples.keys()}")
+    
+    tokenized = ds.map(tokenize_function, batched=True, remove_columns=ds.column_names)
+    return tokenized
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Fine-tune compressed model with factorized layers"
+    )
+    parser.add_argument("--preset", choices=["lora", "full", "freeze"], required=True)
+    parser.add_argument("--model", required=True, help="Path to compressed model")
+    parser.add_argument("--data", required=True, help="Dataset name")
+    parser.add_argument("--out", required=True, help="Output directory")
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--lora-r", type=int, default=8)
+    parser.add_argument("--lora-alpha", type=int, default=16)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    args = parser.parse_args()
+    
+    print(f"Loading compressed model from: {args.model}")
+    
+    # Load model with custom class
+    model = GPT2CompressedLMHeadModel.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    
+    # Set pad token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        model.config.pad_token_id = tokenizer.eos_token_id
+    
+    print(f"Model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
+    
+    # Apply PEFT based on preset
+    if args.preset == "lora":
+        print(f"\nApplying LoRA (r={args.lora_r}, alpha={args.lora_alpha})")
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=["A", "B"],  # Target our FactorizedLinear sub-modules
+            bias="none"
+        )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+    
+    elif args.preset == "full":
+        print("\nFull fine-tuning (all parameters trainable)")
+        # All params already trainable
+    
+    elif args.preset == "freeze":
+        print("\nFreeze fine-tuning (only layer norms and head)")
+        # Freeze all except specified
+        for name, param in model.named_parameters():
+            if any(x in name.lower() for x in ["ln", "layernorm", "lm_head"]):
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Trainable parameters: {trainable:,}")
+    
+    # Load dataset
+    print(f"\nLoading dataset: {args.data}")
+    train_dataset = load_dataset_from_name(args.data, tokenizer)
+    
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=args.out,
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.1,
+        logging_steps=20,
+        save_steps=1000,
+        save_total_limit=2,
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
+        gradient_checkpointing=True,
+        report_to="none",
+    )
+    
+    # Data collator
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
+    )
+    
+    # Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        data_collator=data_collator,
+    )
+    
+    # Train
+    print("\n" + "="*60)
+    print("Starting training...")
+    print("="*60 + "\n")
+    
+    trainer.train()
+    
+    # Save
+    print(f"\nSaving model to: {args.out}")
+    trainer.save_model(args.out)
+    tokenizer.save_pretrained(args.out)
+    
+    print("\n" + "="*60)
+    print("Training completed successfully!")
+    print(f"Model saved to: {args.out}")
+    print("="*60)
+
+
+if __name__ == "__main__":
+    main()

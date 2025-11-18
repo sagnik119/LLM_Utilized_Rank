@@ -114,16 +114,30 @@ python scripts/setup_llamafactory_datasets.py   --data-dir /scratch/users/sagnik
 Recover performance using one of three strategies:
 
 **Option A: LoRA Fine-Tuning (Recommended)**
+
+# use this option for finetuning uncompressed models
 ```bash
 python scripts/finetune_llamafactory.py \
   --preset lora \
   --model ckpts/gpt2_compressed \
   --data-dir /scratch/users/sagnikb/LLaMA-Factory/data \
-  --data wikitext2 \
+  --data alpaca_en \
   --out outputs/gpt2_lora \
   --epochs 2 \
   --lr 1e-4
 ```
+
+# use this option for finetuning compressed models
+python scripts/finetune_compressed.py \
+  --preset lora \
+  --model ckpts/gpt2_compressed \
+  --data alpaca_en \
+  --out outputs/gpt2_lora \
+  --epochs 2 \
+  --lr 2e-4 \
+  --batch-size 4 \
+  --lora-r 8 \
+  --lora-alpha 16
 ### TODO: wikitext2 is basically continued pre training, may hurt performance on tasks, use SFT dataset for fine tuning
 
 **Option B: Full Fine-Tuning**
