@@ -161,8 +161,8 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         # Load config
         config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
         
-        # Create standard model first
-        model = GPT2LMHeadModel(config)
+        # Create instance of our custom class (not GPT2LMHeadModel)
+        model = cls(config)
         
         # Now replace factorized layers with FactorizedLinear modules
         for layer_name in factorized_layers:
