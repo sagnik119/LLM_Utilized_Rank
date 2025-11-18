@@ -162,7 +162,7 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
         
         # Create standard model first
-        model = super(GPT2CompressedLMHeadModel, cls).__init__(config)
+        model = GPT2LMHeadModel(config)
         
         # Now replace factorized layers with FactorizedLinear modules
         for layer_name in factorized_layers:
