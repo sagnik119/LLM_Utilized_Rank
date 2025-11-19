@@ -221,31 +221,31 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
                 print(f"  Warning: Could not find weights for {layer_name}, skipping")
                 continue
                 
-                # Create FactorizedLinear
-                factorized = FactorizedLinear(
-                    in_features=A_weight.shape[1],  # d
-                    out_features=B_weight.shape[0],  # m
-                    rank=A_weight.shape[0],          # r
-                    bias=B_bias is not None
-                )
-                
-                # Load weights
-                factorized.A.weight.data = A_weight
-                factorized.B.weight.data = B_weight
-                if B_bias is not None:
-                    factorized.B.bias.data = B_bias
-                
-                # Navigate to parent and replace
-                parts = layer_name.split(".")
-                parent = model
-                for part in parts[:-1]:
-                    if part.isdigit():
-                        parent = parent[int(part)]
-                    else:
-                        parent = getattr(parent, part)
-                
-                setattr(parent, parts[-1], factorized)
-                print(f"Replaced {layer_name} with FactorizedLinear(rank={factorized.rank})")
+            # Create FactorizedLinear
+            factorized = FactorizedLinear(
+                in_features=A_weight.shape[1],  # d
+                out_features=B_weight.shape[0],  # m
+                rank=A_weight.shape[0],          # r
+                bias=B_bias is not None
+            )
+            
+            # Load weights
+            factorized.A.weight.data = A_weight
+            factorized.B.weight.data = B_weight
+            if B_bias is not None:
+                factorized.B.bias.data = B_bias
+            
+            # Navigate to parent and replace
+            parts = layer_name.split(".")
+            parent = model
+            for part in parts[:-1]:
+                if part.isdigit():
+                    parent = parent[int(part)]
+                else:
+                    parent = getattr(parent, part)
+            
+            setattr(parent, parts[-1], factorized)
+            print(f"Replaced {layer_name} with FactorizedLinear(rank={factorized.rank})")
         
         # Load remaining (non-factorized) weights
         # Filter out factorized keys (both modern .A/.B and legacy .0/.1 formats)
