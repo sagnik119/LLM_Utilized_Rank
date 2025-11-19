@@ -23,17 +23,36 @@ import torch
 import numpy as np
 
 
-def sanitize_json(o):
-    """Convert numpy types → Python native JSON-safe types."""
-    if isinstance(o, (np.generic,)):
-        return o.item()
-    if isinstance(o, dict):
-        return {k: sanitize_json(v) for k, v in o.items()}
-    if isinstance(o, list):
-        return [sanitize_json(v) for v in o]
-    if isinstance(o, tuple):
-        return tuple(sanitize_json(v) for v in o)
-    return o
+def sanitize_json(obj):
+    """Recursively convert all NumPy and torch types to JSON-safe Python types."""
+    import torch
+    
+    # Base simple types
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    
+    # NumPy scalar -> Python scalar
+    if isinstance(obj, np.generic):
+        return obj.item()
+    
+    # NumPy array -> list (recursively)
+    if isinstance(obj, np.ndarray):
+        return sanitize_json(obj.tolist())
+    
+    # Torch tensor -> list
+    if isinstance(obj, torch.Tensor):
+        return sanitize_json(obj.tolist())
+    
+    # Dict -> recursively sanitize
+    if isinstance(obj, dict):
+        return {sanitize_json(k): sanitize_json(v) for k, v in obj.items()}
+    
+    # List/tuple -> recursively sanitize
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json(x) for x in obj]
+    
+    # Fallback -> convert to string (handles dtype, etc.)
+    return str(obj)
 
 def run_lm_eval(
     model_name_or_path: str,
