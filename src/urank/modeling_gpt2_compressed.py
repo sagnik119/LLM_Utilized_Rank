@@ -168,12 +168,18 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
             # Fall back to standard loading
             return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         
-        # Detect factorized layers by looking for .0.weight and .1.weight keys
+        # Detect factorized layers by looking for both formats:
+        # - Modern format: .A.weight / .B.weight (from FactorizedLinear)
+        # - Legacy format: .0.weight / .1.weight (from Sequential)
         factorized_layers = set()
         for key in state_dict.keys():
-            if ".0.weight" in key:
-                # Extract base layer name (e.g., "transformer.h.0.attn.c_attn")
-                base_key = key.replace(".0.weight", "")
+            if key.endswith(".A.weight"):
+                # Modern FactorizedLinear format
+                base_key = key[:-len(".A.weight")]
+                factorized_layers.add(base_key)
+            elif key.endswith(".0.weight"):
+                # Legacy Sequential(Linear, Linear) format
+                base_key = key[:-len(".0.weight")]
                 factorized_layers.add(base_key)
         
         print(f"Detected {len(factorized_layers)} factorized layers")
@@ -190,15 +196,30 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         
         # Now replace factorized layers with FactorizedLinear modules
         for layer_name in factorized_layers:
-            # Get the weights
+            # Try modern format first (.A.weight, .B.weight)
+            weight_A_key = f"{layer_name}.A.weight"
+            weight_B_key = f"{layer_name}.B.weight"
+            bias_B_key = f"{layer_name}.B.bias"
+            
+            # Fallback to legacy format (.0.weight, .1.weight)
             weight_0_key = f"{layer_name}.0.weight"
             weight_1_key = f"{layer_name}.1.weight"
             bias_1_key = f"{layer_name}.1.bias"
             
-            if weight_0_key in state_dict and weight_1_key in state_dict:
+            # Determine which format is present
+            if weight_A_key in state_dict and weight_B_key in state_dict:
+                # Modern FactorizedLinear format
+                A_weight = state_dict[weight_A_key]  # (r, d)
+                B_weight = state_dict[weight_B_key]  # (m, r)
+                B_bias = state_dict.get(bias_B_key)  # (m,)
+            elif weight_0_key in state_dict and weight_1_key in state_dict:
+                # Legacy Sequential format
                 A_weight = state_dict[weight_0_key]  # (r, d)
                 B_weight = state_dict[weight_1_key]  # (m, r)
                 B_bias = state_dict.get(bias_1_key)  # (m,)
+            else:
+                print(f"  Warning: Could not find weights for {layer_name}, skipping")
+                continue
                 
                 # Create FactorizedLinear
                 factorized = FactorizedLinear(
@@ -227,11 +248,17 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
                 print(f"Replaced {layer_name} with FactorizedLinear(rank={factorized.rank})")
         
         # Load remaining (non-factorized) weights
-        # Filter out factorized keys
-        filtered_state_dict = {
-            k: v for k, v in state_dict.items()
-            if not any(f"{layer}." in k for layer in factorized_layers)
-        }
+        # Filter out factorized keys (both modern .A/.B and legacy .0/.1 formats)
+        filtered_state_dict = {}
+        for k, v in state_dict.items():
+            is_factorized = False
+            for layer in factorized_layers:
+                if k.startswith(f"{layer}.A.") or k.startswith(f"{layer}.B.") or \
+                   k.startswith(f"{layer}.0.") or k.startswith(f"{layer}.1."):
+                    is_factorized = True
+                    break
+            if not is_factorized:
+                filtered_state_dict[k] = v
         
         missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
         print(f"Loaded non-factorized weights (missing: {len(missing)}, unexpected: {len(unexpected)})")
