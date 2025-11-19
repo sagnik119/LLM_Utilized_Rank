@@ -20,6 +20,20 @@ Example:
 from typing import Dict, List, Optional
 import warnings
 import torch
+import numpy as np
+
+
+def sanitize_json(o):
+    """Convert numpy types → Python native JSON-safe types."""
+    if isinstance(o, (np.generic,)):
+        return o.item()
+    if isinstance(o, dict):
+        return {k: sanitize_json(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [sanitize_json(v) for v in o]
+    if isinstance(o, tuple):
+        return tuple(sanitize_json(v) for v in o)
+    return o
 
 def run_lm_eval(
     model_name_or_path: str,
@@ -125,7 +139,7 @@ def run_lm_eval(
     if output_path:
         import json
         with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(sanitize_json(results), f, indent=2)
     
     return results
 
