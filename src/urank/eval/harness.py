@@ -19,7 +19,7 @@ Example:
 
 from typing import Dict, List, Optional
 import warnings
-
+import torch
 
 def run_lm_eval(
     model_name_or_path: str,
@@ -72,6 +72,15 @@ def run_lm_eval(
             "lm-eval not installed. Install with: pip install lm-eval"
         ) from e
     
+    # Normalize device to string (lm-eval requires a str)
+    
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    elif isinstance(device, int):
+        device = f"cuda:{device}"
+    elif not isinstance(device, str):
+        raise ValueError(f"Device must be a string, not: {device}")
+
     # Create model wrapper
     try:
         model = HFLM(
