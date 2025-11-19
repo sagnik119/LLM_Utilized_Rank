@@ -8,22 +8,11 @@ Hugging Face transformers for fine-tuning.
 
 import torch
 import torch.nn as nn
-from transformers import GPT2LMHeadModel, GPT2Config
-from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+from transformers import GPT2LMHeadModel
 from typing import Optional
 
-
-class GPT2CompressedConfig(GPT2Config):
-    """
-    Configuration class for GPT2CompressedLMHeadModel.
-    
-    Extends GPT2Config to mark this as a custom architecture for proper
-    AutoConfig/AutoModel registration.
-    """
-    model_type = "gpt2_compressed"
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+# IMPORTANT: load the config from separate file
+from .configuration_gpt2_compressed import GPT2CompressedConfig
 
 
 class FactorizedLinear(nn.Module):
@@ -193,6 +182,7 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         try:
             config = GPT2CompressedConfig.from_pretrained(pretrained_model_name_or_path)
         except:
+            from transformers import GPT2Config
             config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
         
         # Create instance of our custom class (not GPT2LMHeadModel)
