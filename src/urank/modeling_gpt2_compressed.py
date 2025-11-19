@@ -33,6 +33,12 @@ class FactorizedLinear(nn.Module):
     This keeps the low-rank structure A (r, d) and B (m, r) separate,
     enabling parameter-efficient storage and fine-tuning.
     
+    IMPORTANT: This module is designed to be LoRA-compatible. When using PEFT,
+    specify target_modules with submodule patterns like:
+        - "*.A" to target all A matrices
+        - "*.B" to target all B matrices
+        - Or specific patterns like "attn.*.A" for attention only
+    
     Args:
         in_features: Input dimension d
         out_features: Output dimension m
@@ -47,14 +53,25 @@ class FactorizedLinear(nn.Module):
         self.rank = rank
         
         # A: (r, d) - first projection
+        # Named as 'A' to be accessible to PEFT via "*.A" pattern
         self.A = nn.Linear(in_features, rank, bias=False)
         
         # B: (m, r) - second projection
+        # Named as 'B' to be accessible to PEFT via "*.B" pattern
         self.B = nn.Linear(rank, out_features, bias=bias)
     
     def forward(self, x):
         """Forward pass: y = B(A(x))"""
         return self.B(self.A(x))
+    
+    def get_lora_target_modules(self):
+        """
+        Return the submodules that should receive LoRA adapters.
+        
+        Returns:
+            List of (name, module) tuples for LoRA injection
+        """
+        return [("A", self.A), ("B", self.B)]
     
     @classmethod
     def from_sequential(cls, sequential: nn.Sequential):

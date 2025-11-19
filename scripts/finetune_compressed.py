@@ -65,6 +65,25 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
     return tokenized
 
 
+def find_factorized_submodules(model):
+    """
+    Find all A and B submodules inside FactorizedLinear layers.
+    
+    Returns:
+        List of module name patterns that PEFT can match
+    """
+    from src.urank.modeling_gpt2_compressed import FactorizedLinear
+    
+    factorized_targets = []
+    for name, module in model.named_modules():
+        if isinstance(module, FactorizedLinear):
+            # Add both A and B submodules of this FactorizedLinear
+            factorized_targets.append(f"{name}.A")
+            factorized_targets.append(f"{name}.B")
+    
+    return factorized_targets
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fine-tune compressed model with factorized layers"
@@ -99,12 +118,26 @@ def main():
     # Apply PEFT based on preset
     if args.preset == "lora":
         print(f"\nApplying LoRA (r={args.lora_r}, alpha={args.lora_alpha})")
+        
+        # Find all FactorizedLinear A and B submodules
+        target_modules = find_factorized_submodules(model)
+        
+        if not target_modules:
+            print("WARNING: No FactorizedLinear modules found. Falling back to standard patterns.")
+            target_modules = ["c_attn", "c_proj", "c_fc"]
+        else:
+            print(f"Found {len(target_modules)} FactorizedLinear submodules (A and B) for LoRA:")
+            for i, name in enumerate(target_modules[:10]):  # Show first 10
+                print(f"  [{i+1}] {name}")
+            if len(target_modules) > 10:
+                print(f"  ... and {len(target_modules) - 10} more")
+        
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
-            target_modules=["A", "B"],  # Target our FactorizedLinear sub-modules
+            target_modules=target_modules,  # Now contains explicit paths like "transformer.h.0.attn.c_attn.A"
             bias="none"
         )
         model = get_peft_model(model, peft_config)
