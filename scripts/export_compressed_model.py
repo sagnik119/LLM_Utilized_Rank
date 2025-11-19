@@ -82,21 +82,46 @@ def export_compressed_model(model_path, output_path, lora_path=None, tokenizer_p
         tok = AutoTokenizer.from_pretrained("gpt2")
     tok.save_pretrained(output_path)
 
-    # 3. Copy modeling file
-    print("  [3/5] Copying modeling file...")
-    src_model = Path(__file__).parent.parent / "src" / "urank" / "modeling_gpt2_compressed.py"
-    shutil.copy2(src_model, output_path / "modeling_gpt2_compressed.py")
+    # 3. Copy entire urank package structure
+    print("  [3/5] Copying urank package structure...")
+    src_urank = Path(__file__).parent.parent / "src" / "urank"
+    dst_urank = output_path / "urank"
+    
+    # Copy entire directory tree (excluding __pycache__, etc.)
+    if dst_urank.exists():
+        shutil.rmtree(dst_urank)
+    
+    def ignore_patterns(dir, files):
+        """Ignore __pycache__, .pyc files, and eval subdirectory."""
+        ignore = set()
+        for f in files:
+            if f == '__pycache__' or f.endswith('.pyc') or f == 'eval':
+                ignore.add(f)
+        return ignore
+    
+    shutil.copytree(src_urank, dst_urank, ignore=ignore_patterns)
+    print(f"    Copied urank package to {dst_urank}")
 
-    # 4. Copy config file
-    print("  [4/5] Copying configuration file...")
-    src_cfg = Path(__file__).parent.parent / "src" / "urank" / "configuration_gpt2_compressed.py"
-    shutil.copy2(src_cfg, output_path / "configuration_gpt2_compressed.py")
+    # 4. Create top-level wrapper files for trust_remote_code compatibility
+    print("  [4/5] Creating wrapper files...")
+    
+    # modeling_gpt2_compressed.py wrapper
+    (output_path / "modeling_gpt2_compressed.py").write_text(
+        "# Auto-generated wrapper for trust_remote_code\n"
+        "from urank.modeling_gpt2_compressed import *\n"
+    )
+    
+    # configuration_gpt2_compressed.py wrapper
+    (output_path / "configuration_gpt2_compressed.py").write_text(
+        "# Auto-generated wrapper for trust_remote_code\n"
+        "from urank.configuration_gpt2_compressed import *\n"
+    )
 
-    # 5. Create __init__.py
+    # 5. Create top-level __init__.py
     print("  [5/5] Generating __init__.py...")
     (output_path / "__init__.py").write_text(
-        "from .configuration_gpt2_compressed import GPT2CompressedConfig\n"
-        "from .modeling_gpt2_compressed import GPT2CompressedLMHeadModel, FactorizedLinear\n"
+        "from urank.configuration_gpt2_compressed import GPT2CompressedConfig\n"
+        "from urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel, FactorizedLinear\n"
         "\n"
         "__all__ = ['GPT2CompressedConfig','GPT2CompressedLMHeadModel','FactorizedLinear']\n"
     )
