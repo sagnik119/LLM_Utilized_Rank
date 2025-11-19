@@ -40,6 +40,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import torch
 from transformers import AutoTokenizer, AutoConfig
+from urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel, FactorizedLinear
+from transformers import AutoConfig, AutoModelForCausalLM
+from urank.modeling_gpt2_compressed import GPT2CompressedConfig
+
+# Pre-register the custom architecture
+AutoConfig.register("gpt2_compressed", GPT2CompressedConfig)
+AutoModelForCausalLM.register(GPT2CompressedConfig, GPT2CompressedLMHeadModel)
 
 
 def export_compressed_model(
@@ -57,35 +64,61 @@ def export_compressed_model(
         lora_path: Optional path to LoRA adapter to merge
         tokenizer_path: Optional tokenizer path (defaults to original model)
     """
-    from urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
+    
     
     print(f"Loading compressed model from: {model_path}")
     
-    # Load base compressed model
+    # Load base compressed model with custom architecture
     try:
         model = GPT2CompressedLMHeadModel.from_pretrained(
             model_path,
-            trust_remote_code=True
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
         )
         print(f"✓ Loaded compressed model ({sum(p.numel() for p in model.parameters())/1e6:.1f}M params)")
+        
+        # Count FactorizedLinear modules
+        factorized_count = sum(1 for m in model.modules() if isinstance(m, FactorizedLinear))
+        print(f"  Contains {factorized_count} FactorizedLinear layers")
+        
     except Exception as e:
         print(f"✗ Failed to load model: {e}")
         raise
     
-    # Optionally merge LoRA
+    # Optionally merge LoRA while preserving FactorizedLinear structure
     if lora_path:
-        print(f"Merging LoRA adapters from: {lora_path}")
+        print(f"\nMerging LoRA adapters from: {lora_path}")
         try:
             from peft import PeftModel
-            model = PeftModel.from_pretrained(model, lora_path)
+            
+            # Load PEFT model
+            peft_model = PeftModel.from_pretrained(
+                model,
+                lora_path,
+                is_trainable=False
+            )
             
             # Count LoRA params before merge
-            lora_params = sum(p.numel() for n, p in model.named_parameters() if "lora" in n.lower())
+            lora_params = sum(p.numel() for n, p in peft_model.named_parameters() if "lora" in n.lower())
             print(f"  LoRA params: {lora_params/1e6:.2f}M")
             
-            # Merge and unload
-            model = model.merge_and_unload()
+            # Merge LoRA weights into the base model
+            # This calls merge() on each LoRA module, updating the weights in-place
+            print(f"  Merging LoRA adapters into base weights...")
+            merged_model = peft_model.merge_and_unload()
+            
+            # Verify FactorizedLinear structure is preserved
+            factorized_after = sum(1 for m in merged_model.modules() if isinstance(m, FactorizedLinear))
+            
+            if factorized_after != factorized_count:
+                print(f"  ⚠ WARNING: FactorizedLinear count changed from {factorized_count} to {factorized_after}")
+                print(f"  This may indicate the structure was not preserved correctly")
+            else:
+                print(f"  ✓ FactorizedLinear structure preserved ({factorized_after} layers)")
+            
+            model = merged_model
             print(f"✓ Merged LoRA into base weights")
+            
         except ImportError:
             print("✗ PEFT not installed. Install with: pip install peft")
             raise
