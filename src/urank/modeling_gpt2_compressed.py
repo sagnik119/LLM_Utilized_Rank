@@ -13,6 +13,19 @@ from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from typing import Optional
 
 
+class GPT2CompressedConfig(GPT2Config):
+    """
+    Configuration class for GPT2CompressedLMHeadModel.
+    
+    Extends GPT2Config to mark this as a custom architecture for proper
+    AutoConfig/AutoModel registration.
+    """
+    model_type = "gpt2_compressed"
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+
 class FactorizedLinear(nn.Module):
     """
     A factorized linear layer that computes y = (B @ A) @ x without fusing.
@@ -96,8 +109,9 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         # Save (preserves factorized structure)
         model.save_pretrained("path/to/save")
     """
+    config_class = GPT2CompressedConfig
     
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config):
         super().__init__(config)
         self._replace_sequential_with_factorized()
     
@@ -158,8 +172,11 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         
         print(f"Detected {len(factorized_layers)} factorized layers")
         
-        # Load config
-        config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
+        # Load config (try compressed config first, fall back to GPT2Config)
+        try:
+            config = GPT2CompressedConfig.from_pretrained(pretrained_model_name_or_path)
+        except:
+            config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
         
         # Create instance of our custom class (not GPT2LMHeadModel)
         model = cls(config)
@@ -215,9 +232,10 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
         return model
 
 
-# Register for AutoModel
+# Register for AutoModel and AutoConfig
 try:
-    from transformers import AutoModelForCausalLM
-    AutoModelForCausalLM.register(GPT2Config, GPT2CompressedLMHeadModel)
+    from transformers import AutoConfig, AutoModelForCausalLM
+    AutoConfig.register("gpt2_compressed", GPT2CompressedConfig)
+    AutoModelForCausalLM.register(GPT2CompressedConfig, GPT2CompressedLMHeadModel)
 except:
     pass

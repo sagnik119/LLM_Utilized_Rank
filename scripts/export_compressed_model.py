@@ -144,11 +144,12 @@ def export_compressed_model(
             "initializer_range": 0.02,
         }
     
-    # Add custom architecture fields
+    # Add custom architecture fields with correct auto_map
     config.update({
         "model_type": "gpt2_compressed",
         "architectures": ["GPT2CompressedLMHeadModel"],
         "auto_map": {
+            "AutoConfig": "modeling_gpt2_compressed.GPT2CompressedConfig",
             "AutoModelForCausalLM": "modeling_gpt2_compressed.GPT2CompressedLMHeadModel"
         },
     })
