@@ -155,9 +155,17 @@ def test_export(base_dir: str, lora_dir: str, export_dir: str, with_lora: bool):
     """Test the export function."""
     step = 3 if with_lora else 2
     
+    # Import the export function by adding scripts dir to path
+    scripts_dir = Path(__file__).parent
+    sys.path.insert(0, str(scripts_dir))
+    
+    try:
+        from export_compressed_model import export_compressed_model
+    finally:
+        sys.path.pop(0)
+    
     if with_lora:
         print(f"\n[{step}/6] Testing export WITH LoRA merge...")
-        from scripts.export_compressed_model import export_compressed_model
         export_compressed_model(
             model_path=base_dir,
             output_path=export_dir,
@@ -165,7 +173,6 @@ def test_export(base_dir: str, lora_dir: str, export_dir: str, with_lora: bool):
         )
     else:
         print(f"\n[{step}/6] Testing export WITHOUT LoRA...")
-        from scripts.export_compressed_model import export_compressed_model
         export_compressed_model(
             model_path=base_dir,
             output_path=export_dir,
