@@ -29,7 +29,12 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Limit examples per task")
     parser.add_argument("--device", default=None, help="Device (cuda/cpu)")
     parser.add_argument("--out", default=None, help="Output JSON file")
-    parser.add_argument("--trust-remote-code", action="store_true", help="Trust remote code")
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=True,
+        help="Trust remote code (default: True for compressed models)"
+    )
     args = parser.parse_args()
     
     print(f"Evaluating model: {args.model}")
