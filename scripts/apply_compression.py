@@ -93,54 +93,12 @@ def main():
     with open(out_path / "ranks.json", "w") as f:
         json.dump(ranks, f, indent=2)
 
-    # Copy custom architecture files for trust_remote_code
-    print("\nCopying custom architecture files...")
-    src_root = Path(__file__).parent.parent / "src" / "urank"
-    
-    files_to_copy = [
-        "modeling_gpt2_compressed.py",
-        "configuration_gpt2_compressed.py"
-    ]
-    
-    for fname in files_to_copy:
-        src_file = src_root / fname
-        if src_file.exists():
-            shutil.copy2(src_file, out_path / fname)
-            print(f"  Copied {fname}")
-        else:
-            print(f"  Warning: {fname} not found at {src_file}")
-    
-    # Write __init__.py for package structure
-    (out_path / "__init__.py").write_text(
-        "from .modeling_gpt2_compressed import GPT2CompressedLMHeadModel\n"
-        "from .configuration_gpt2_compressed import GPT2CompressedConfig\n"
-        "\n"
-        "__all__ = ['GPT2CompressedLMHeadModel', 'GPT2CompressedConfig']\n"
-    )
-    print("  Created __init__.py")
-    
-    # Update config.json to use custom architecture
-    config_path = out_path / "config.json"
-    with open(config_path) as f:
-        config = json.load(f)
-    
-    config.update({
-        "model_type": "gpt2_compressed",
-        "architectures": ["GPT2CompressedLMHeadModel"],
-        "auto_map": {
-            "AutoConfig": "configuration_gpt2_compressed.GPT2CompressedConfig",
-            "AutoModelForCausalLM": "modeling_gpt2_compressed.GPT2CompressedLMHeadModel",
-        },
-    })
-    
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-    print("  Updated config.json with custom architecture")
-
     print("\n✓ Compression complete!")
+    print(f"\nThe compressed model is saved as standard GPT-2 architecture")
+    print(f"with modified layer structures (factorized where beneficial).")
     print(f"\nTo load the compressed model:")
     print(f"  from transformers import AutoModelForCausalLM")
-    print(f"  model = AutoModelForCausalLM.from_pretrained('{args.out}', trust_remote_code=True)")
+    print(f"  model = AutoModelForCausalLM.from_pretrained('{args.out}')")
 
 
 if __name__ == "__main__":
