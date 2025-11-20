@@ -1,160 +1,129 @@
 """
-Model compression utilities for applying utilized rank transformations.
+Output-activation–based model compression utilities.
 
-This module provides utilities for:
-- Applying compression to all layers based on rank search results
-- Deciding whether to factorize or keep transformed weights
-- Replacing layers with low-rank factorizations
-- Supports both nn.Linear and GPT-2 Conv1D layers
+Given:
+  • Y^T Y for each layer
+  • rank r for each layer (from search_ranks_energy.py)
+
+We reconstruct:
+    W' = U_r (U_r^T W)
+where U_r are the top r eigenvectors of Y^T Y.
+
+Optional: replace layer with factorized Sequential(B → A).
+
+Supports nn.Linear and GPT-2 Conv1D.
 """
 
 from typing import Dict, Optional
 import torch
 import torch.nn as nn
-
-from .transform import transform_weight_ps_pt, factorize_rank, should_factorize
-from .subspace import topk_from_xtx, projector_from_vecs
 from .instrumentation import get_parent_and_attr
 
-# Import Conv1D for GPT-2 compatibility
+# GPT-2 Conv1D
 try:
     from transformers.models.gpt2.modeling_gpt2 import Conv1D
     HAS_CONV1D = True
-except ImportError:
+except Exception:
     Conv1D = None
     HAS_CONV1D = False
 
 
+def should_factorize(m, d, r, threshold=None):
+    """
+    Decide whether factorization is parameter-efficient.
+
+    Default criterion:
+        r (m + d) < m d
+    """
+    if threshold is not None:
+        return (r * (m + d)) / (m * d) < threshold
+
+    return r * (m + d) < m * d
+
+
 def apply_compression(
     model: nn.Module,
-    xtx_map: Dict[str, torch.Tensor],
+    yty_map: Dict[str, torch.Tensor],
     ranks: Dict[str, Dict],
-    factorize_threshold: Optional[float] = None
+    factorize_threshold: Optional[float] = None,
 ):
     """
-    Apply compression to model based on rank search results.
-    
-    For each layer in ranks:
-    1. Compute projectors P_S, P_T from energy thresholds
-    2. Transform weight: W' = P_T @ W @ P_S
-    3. If factorization saves parameters, replace with two Linear layers
-    4. Otherwise, update weight in-place with W'
-    
+    Apply Y^T Y-based spectral compression to each layer.
+
     Args:
-        model: PyTorch model to compress
-        xtx_map: Dictionary mapping layer names to X^T X matrices
-        ranks: Dictionary mapping layer names to rank info dicts with keys:
-               - k_S, k_T, r: Subspace dimensions and utilized rank
-               - e_S, e_T: Energy thresholds (if available)
-        factorize_threshold: Optional ratio threshold for factorization decision
-                            If None, uses r * (m + d) < m * d criterion
-    
-    Example:
-        >>> with open("ranks.json") as f:
-        ...     ranks = json.load(f)
-        >>> xtx_map = torch.load("stats.pt")
-        >>> apply_compression(model, xtx_map, ranks)
-        >>> model.save_pretrained("compressed_model")
+        model: GPT-family model (Linear/Conv1D weights)
+        yty_map: dict: layer_name → Y^T Y matrix (d_out × d_out)
+        ranks: dict: layer_name → {"r": int, "d_out": int, "energy": float}
+        factorize_threshold: optional compression ratio threshold
     """
-    # Build name -> module mapping for Linear and Conv1D layers
+
+    # Map module names to Linear/Conv1D modules
     name_to_module = {}
-    for n, m in model.named_modules():
-        is_target = isinstance(m, nn.Linear)
-        if HAS_CONV1D and Conv1D is not None:
-            is_target = is_target or isinstance(m, Conv1D)
-        if is_target:
-            name_to_module[n] = m
-    
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear) or (HAS_CONV1D and isinstance(module, Conv1D)):
+            name_to_module[name] = module
+
+    # Process each ranked layer
     for name, cfg in ranks.items():
+
         if name not in name_to_module:
-            print(f"Warning: Layer {name} not found in model")
+            print(f"[WARN] Layer not found in model: {name}")
             continue
-        
-        if name not in xtx_map:
-            print(f"Warning: No statistics for layer {name}")
+        if name not in yty_map:
+            print(f"[WARN] No Y^T Y stats for layer: {name}")
             continue
-        
-        lin = name_to_module[name]
-        xtx = xtx_map[name]
-        
-        # Check if this is a Conv1D layer
-        is_conv1d = HAS_CONV1D and Conv1D is not None and isinstance(lin, Conv1D)
-        
-        # Get weight as (m, d) regardless of module type
-        if is_conv1d:
-            W = lin.weight.data.T.contiguous()
-        else:
-            W = lin.weight.data
-        m, d = W.shape
-        
-        # Compute input subspace projector
-        if cfg.get("e_S") is not None:
-            V_S, _ = topk_from_xtx(xtx.to(W.device), cfg["e_S"])
-        else:
-            # Use k_S directly if energy not stored
-            evals, evecs = torch.linalg.eigh(xtx.to(W.device))
-            idx = torch.argsort(evals, descending=True)
-            V_S = evecs[:, idx][:, :cfg["k_S"]]
-        
-        P_S = projector_from_vecs(V_S)
-        
-        # Compute output subspace projector
-        ttx = W @ xtx.to(W.device) @ W.T
-        
-        if cfg.get("e_T") is not None:
-            V_T, _ = topk_from_xtx(ttx, cfg["e_T"])
-        else:
-            # Use k_T directly
-            evals, evecs = torch.linalg.eigh(ttx)
-            idx = torch.argsort(evals, descending=True)
-            V_T = evecs[:, idx][:, :cfg["k_T"]]
-        
-        P_T = projector_from_vecs(V_T)
-        
-        # Transform weight (W is already in (m, d) format)
-        W_prime = P_T.to(W) @ W @ P_S.to(W)
-        
-        # Decide whether to factorize
+
+        module = name_to_module[name]
+        C = yty_map[name].float()  # Y^T Y
         r = cfg["r"]
-        
-        # Check if factorization is beneficial
-        do_factorize = False
-        if factorize_threshold is not None:
-            # Use custom threshold
-            do_factorize = (r * (m + d)) / (m * d) < factorize_threshold
+
+        # Extract weight matrix W as (d_out, d_in)
+        if HAS_CONV1D and isinstance(module, Conv1D):
+            W = module.weight.data.T.float()
         else:
-            # Use standard criterion
-            do_factorize = should_factorize(m, d, r)
-        
-        if do_factorize and r < min(m, d):
-            # Factorize and replace layer
-            left, right = factorize_rank(W_prime, r)
-            
-            # Create new Linear layers (no bias for simplicity)
-            lin_left = nn.Linear(r, m, bias=False)
-            lin_right = nn.Linear(d, r, bias=False)
-            lin_left.weight.data.copy_(left)
-            lin_right.weight.data.copy_(right)
-            
-            # Handle bias if present
-            if lin.bias is not None:
-                lin_left.bias = lin.bias
-            
-            # Replace in parent module
+            W = module.weight.data.float()
+
+        d_out, d_in = W.shape
+        assert C.shape[0] == d_out, f"Y^T Y wrong size for {name}"
+
+        # Eigen-decomposition of Y^T Y
+        eigvals, eigvecs = torch.linalg.eigh(C)
+        idx = torch.argsort(eigvals, descending=True)
+        U = eigvecs[:, idx][:, :r]  # (d_out × r)
+
+        # Compressed factors
+        A = U                           # (d_out × r)
+        B = (U.T @ W)                   # (r × d_in)
+        W_prime = A @ B                 # (d_out × d_in)
+
+        # Decide factorization
+        do_factorize = should_factorize(d_out, d_in, r, threshold=factorize_threshold)
+
+        if do_factorize:
+            # Build factorized Sequential(B → A)
+            lin_right = nn.Linear(d_in, r, bias=False)
+            lin_left = nn.Linear(r, d_out, bias=False)
+
+            lin_left.weight.data.copy_(A)
+            lin_right.weight.data.copy_(B)
+
+            # Bias: keep on left
+            if module.bias is not None:
+                lin_left.bias = module.bias
+
+            # Replace module
             parent, attr = get_parent_and_attr(model, name)
             setattr(parent, attr, nn.Sequential(lin_right, lin_left))
-            
-            param_ratio = (r * (m + d)) / (m * d)
-            print(f"Factorized {name}: ({m}, {d}) -> ({m}, {r}) @ ({r}, {d}) "
-                  f"[{param_ratio:.2%} params]")
+
+            print(f"[FACTORIZED] {name}: ({d_out},{d_in}) → r={r}")
         else:
-            # Just update weight with transformed version
-            if is_conv1d:
-                # Transpose back for Conv1D storage
-                lin.weight.data.copy_(W_prime.T)
+            # Write weight directly
+            if HAS_CONV1D and isinstance(module, Conv1D):
+                module.weight.data.copy_(W_prime.T)
             else:
-                lin.weight.data.copy_(W_prime)
-            print(f"Transformed {name}: ({m}, {d}) with r={r} (kept as single layer)")
+                module.weight.data.copy_(W_prime)
+
+            print(f"[COMPRESSED] {name}: r={r} kept as single layer")
 
 
 def compute_compression_stats(

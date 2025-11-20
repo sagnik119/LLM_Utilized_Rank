@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-Apply compression to a model based on rank search results.
+Apply compression to a model using output-activation covariance (Y^T Y).
 
-This script loads a model, activation statistics, and rank search results,
-then applies the compression by transforming weights and optionally factorizing.
+This script:
+  • Loads a model
+  • Loads Y^T Y statistics
+  • Loads rank assignments (from search_ranks_energy.py)
+  • Reconstructs each layer from its top-r output eigenvectors
+  • Optionally factorizes compressed layers
+  • Saves the compressed checkpoint
 
 Usage:
-    python scripts/apply_compression.py --model gpt2 --ranks ranks.json \\
-        --stats stats/gpt2_xtx.pt --out ckpts/gpt2_compressed
+    python scripts/apply_compression.py \
+        --model gpt2 \
+        --ranks ranks/gpt2_energy.json \
+        --stats stats/gpt2_yty.pt \
+        --out ckpts/gpt2_compressed
 """
 
 import argparse
@@ -15,69 +23,71 @@ import json
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from urank.compression import apply_compression, compute_compression_stats
+from urank.compression import apply_compression
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Apply compression to model")
+    parser = argparse.ArgumentParser(description="Apply Y^T Y-based compression")
     parser.add_argument("--model", type=str, required=True, help="Model name or path")
-    parser.add_argument("--ranks", type=str, required=True, help="Rank search results JSON")
-    parser.add_argument("--stats", type=str, required=True, help="Path to X^T X statistics")
-    parser.add_argument("--out", type=str, required=True, help="Output directory")
-    parser.add_argument("--factorize-threshold", type=float, default=None, 
-                       help="Custom factorization threshold")
+    parser.add_argument("--ranks", type=str, required=True,
+                        help="JSON file produced by search_ranks_energy.py")
+    parser.add_argument("--stats", type=str, required=True,
+                        help="Path to Y^T Y statistics (.pt)")
+    parser.add_argument("--out", type=str, required=True,
+                        help="Directory to save compressed model")
+    parser.add_argument("--factorize-threshold", type=float, default=None,
+                        help="Optional parameter budget threshold for factorization")
     args = parser.parse_args()
-    
-    # Setup device
+
+    # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    
-    # Load model and tokenizer
+
+    # Load model + tokenizer
     print(f"Loading model: {args.model}")
-    model = AutoModelForCausalLM.from_pretrained(args.model).to(device)
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32).to(device)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    
-    # Load rank search results
+
+    # Load ranks
     print(f"Loading ranks from: {args.ranks}")
     with open(args.ranks, "r") as f:
         ranks = json.load(f)
     print(f"Loaded ranks for {len(ranks)} layers")
-    
-    # Load statistics
-    print(f"Loading statistics from: {args.stats}")
-    xtx_map = torch.load(args.stats)
-    
-    # Count original parameters
-    original_params = sum(p.numel() for p in model.parameters())
-    print(f"Original parameters: {original_params:,}")
-    
+
+    # Load Y^T Y statistics
+    print(f"Loading Y^T Y statistics from: {args.stats}")
+    yty_map = torch.load(args.stats, map_location="cpu")
+
+    # Original param count
+    orig_params = sum(p.numel() for p in model.parameters())
+    print(f"Original parameters: {orig_params:,}")
+
     # Apply compression
     print("\nApplying compression...")
     apply_compression(
-        model,
-        xtx_map,
-        ranks,
-        factorize_threshold=args.factorize_threshold
+        model=model,
+        yty_map=yty_map,
+        ranks=ranks,
+        factorize_threshold=args.factorize_threshold,
     )
-    
-    # Count compressed parameters
-    compressed_params = sum(p.numel() for p in model.parameters())
-    reduction = 100 * (1 - compressed_params / original_params)
-    
-    print(f"\nCompression summary:")
-    print(f"  Original parameters:   {original_params:,}")
-    print(f"  Compressed parameters: {compressed_params:,}")
-    print(f"  Reduction:             {reduction:.2f}%")
-    
-    # Save compressed model
+
+    # Compressed param count
+    comp_params = sum(p.numel() for p in model.parameters())
+    reduction = 100 * (1 - comp_params / orig_params)
+
+    print("\nCompression summary:")
+    print(f"Original parameters:   {orig_params:,}")
+    print(f"Compressed parameters: {comp_params:,}")
+    print(f"Reduction:             {reduction:.2f}%")
+
+    # Save
     print(f"\nSaving compressed model to: {args.out}")
     model.save_pretrained(args.out, safe_serialization=True)
     tokenizer.save_pretrained(args.out)
-    
-    # Also save the ranks config for reference
+
     with open(f"{args.out}/ranks.json", "w") as f:
         json.dump(ranks, f, indent=2)
-    
+
     print("Done!")
 
 
