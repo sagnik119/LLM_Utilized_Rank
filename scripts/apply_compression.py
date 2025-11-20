@@ -20,7 +20,9 @@ Usage:
 
 import argparse
 import json
+import shutil
 import torch
+from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from urank.compression import apply_compression
@@ -80,15 +82,65 @@ def main():
     print(f"Compressed parameters: {comp_params:,}")
     print(f"Reduction:             {reduction:.2f}%")
 
-    # Save
+    # Save model and tokenizer
     print(f"\nSaving compressed model to: {args.out}")
+    out_path = Path(args.out)
+    out_path.mkdir(parents=True, exist_ok=True)
+    
     model.save_pretrained(args.out, safe_serialization=True)
     tokenizer.save_pretrained(args.out)
 
-    with open(f"{args.out}/ranks.json", "w") as f:
+    with open(out_path / "ranks.json", "w") as f:
         json.dump(ranks, f, indent=2)
 
-    print("Done!")
+    # Copy custom architecture files for trust_remote_code
+    print("\nCopying custom architecture files...")
+    src_root = Path(__file__).parent.parent / "src" / "urank"
+    
+    files_to_copy = [
+        "modeling_gpt2_compressed.py",
+        "configuration_gpt2_compressed.py"
+    ]
+    
+    for fname in files_to_copy:
+        src_file = src_root / fname
+        if src_file.exists():
+            shutil.copy2(src_file, out_path / fname)
+            print(f"  Copied {fname}")
+        else:
+            print(f"  Warning: {fname} not found at {src_file}")
+    
+    # Write __init__.py for package structure
+    (out_path / "__init__.py").write_text(
+        "from .modeling_gpt2_compressed import GPT2CompressedLMHeadModel\n"
+        "from .configuration_gpt2_compressed import GPT2CompressedConfig\n"
+        "\n"
+        "__all__ = ['GPT2CompressedLMHeadModel', 'GPT2CompressedConfig']\n"
+    )
+    print("  Created __init__.py")
+    
+    # Update config.json to use custom architecture
+    config_path = out_path / "config.json"
+    with open(config_path) as f:
+        config = json.load(f)
+    
+    config.update({
+        "model_type": "gpt2_compressed",
+        "architectures": ["GPT2CompressedLMHeadModel"],
+        "auto_map": {
+            "AutoConfig": "configuration_gpt2_compressed.GPT2CompressedConfig",
+            "AutoModelForCausalLM": "modeling_gpt2_compressed.GPT2CompressedLMHeadModel",
+        },
+    })
+    
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print("  Updated config.json with custom architecture")
+
+    print("\n✓ Compression complete!")
+    print(f"\nTo load the compressed model:")
+    print(f"  from transformers import AutoModelForCausalLM")
+    print(f"  model = AutoModelForCausalLM.from_pretrained('{args.out}', trust_remote_code=True)")
 
 
 if __name__ == "__main__":
