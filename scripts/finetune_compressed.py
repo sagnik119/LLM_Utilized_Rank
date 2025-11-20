@@ -32,6 +32,7 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
         "alpaca_en": ("tatsu-lab/alpaca", None, "train"),
         "alpaca_gpt4": ("vicgalle/alpaca-gpt4", None, "train"),
         "wikitext2": ("wikitext", "wikitext-2-raw-v1", "train"),
+        "redpajama": ("togethercomputer/RedPajama-Data-V2", "sample", "train"),
     }
     
     if dataset_name in DATASET_CONFIGS:
@@ -43,7 +44,10 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
     else:
         # Try loading directly
         if dataset_name == "c4":
-            ds = load_dataset("c4", "en.noblocklist", split=split)  # or "en.noblocklist"
+            ds = load_dataset("c4", "en.noblocklist", split=split)
+        elif dataset_name == "togethercomputer/RedPajama-Data-V2":
+            # RedPajama V2 requires specific config
+            ds = load_dataset("togethercomputer/RedPajama-Data-V2", "sample", split=split)
         else:
             ds = load_dataset(dataset_name, split=split)
     
@@ -59,7 +63,10 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
                 text += f"### Response: {examples['output'][i]}"
                 texts.append(text)
             return tokenizer(texts, truncation=True, max_length=512)
-        # Handle text datasets
+        # Handle RedPajama V2 format
+        elif "raw_content" in examples:
+            return tokenizer(examples["raw_content"], truncation=True, max_length=512)
+        # Handle standard text datasets
         elif "text" in examples:
             return tokenizer(examples["text"], truncation=True, max_length=512)
         else:
