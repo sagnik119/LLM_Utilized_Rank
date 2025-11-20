@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
 
 
-def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
+def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train", max_length: int = 512):
     """Load and tokenize a dataset."""
     # Common dataset mappings - use web download for Alpaca to avoid JSON errors
     DATASET_CONFIGS = {
@@ -33,6 +33,7 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
         "alpaca_gpt4": ("vicgalle/alpaca-gpt4", None, "train"),
         "wikitext2": ("wikitext", "wikitext-2-raw-v1", "train"),
         "redpajama": ("togethercomputer/RedPajama-Data-V2", "sample", "train"),
+        "slimpajama": ("cadenpark/slimpajama-627m", None, "train"),
     }
     
     if dataset_name in DATASET_CONFIGS:
@@ -48,6 +49,9 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
         elif dataset_name == "togethercomputer/RedPajama-Data-V2":
             # RedPajama V2 requires specific config
             ds = load_dataset("togethercomputer/RedPajama-Data-V2", "sample", split=split)
+        elif dataset_name == "cadenpark/slimpajama-627m":
+            # SlimPajama dataset
+            ds = load_dataset("cadenpark/slimpajama-627m", split=split)
         else:
             ds = load_dataset(dataset_name, split=split)
     
@@ -62,13 +66,13 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
                     text += f"### Input: {examples['input'][i]}\n"
                 text += f"### Response: {examples['output'][i]}"
                 texts.append(text)
-            return tokenizer(texts, truncation=True, max_length=512)
+            return tokenizer(texts, truncation=True, max_length=max_length)
         # Handle RedPajama V2 format
         elif "raw_content" in examples:
-            return tokenizer(examples["raw_content"], truncation=True, max_length=512)
+            return tokenizer(examples["raw_content"], truncation=True, max_length=max_length)
         # Handle standard text datasets
         elif "text" in examples:
-            return tokenizer(examples["text"], truncation=True, max_length=512)
+            return tokenizer(examples["text"], truncation=True, max_length=max_length)
         else:
             raise ValueError(f"Unknown dataset format: {examples.keys()}")
     
@@ -103,7 +107,9 @@ def main():
     parser.add_argument("--model", required=True, help="Path to compressed model")
     parser.add_argument("--data", required=True, help="Dataset name")
     parser.add_argument("--out", required=True, help="Output directory")
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs (ignored if --max-train-tokens is set)")
+    parser.add_argument("--max-train-tokens", type=int, default=None, help="Train for exactly this many tokens (overrides --epochs)")
+    parser.add_argument("--seq-length", type=int, default=512, help="Sequence length for tokenization")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=4)
@@ -173,12 +179,34 @@ def main():
     
     # Load dataset
     print(f"\nLoading dataset: {args.data}")
-    train_dataset = load_dataset_from_name(args.data, tokenizer)
+    train_dataset = load_dataset_from_name(args.data, tokenizer, max_length=args.seq_length)
+    
+    # Compute training steps based on token budget
+    if args.max_train_tokens is not None:
+        # Token-budget training mode
+        tokens_per_batch = args.batch_size * args.grad_accum * args.seq_length
+        max_steps = args.max_train_tokens // tokens_per_batch
+        num_epochs = 1  # Single pass, stopping at max_steps
+        
+        print(f"\n{'='*60}")
+        print(f"TOKEN-BUDGET TRAINING MODE")
+        print(f"{'='*60}")
+        print(f"Target tokens: {args.max_train_tokens:,}")
+        print(f"Tokens per batch: {tokens_per_batch:,}")
+        print(f"Total steps: {max_steps:,}")
+        print(f"Estimated time (A100): ~{max_steps * 0.5 / 60:.1f} minutes")
+        print(f"{'='*60}\n")
+    else:
+        # Epoch-based training mode (original behavior)
+        max_steps = -1
+        num_epochs = args.epochs
+        print(f"\nEpoch-based training: {num_epochs} epochs")
     
     # Training arguments
     training_args = TrainingArguments(
         output_dir=args.out,
-        num_train_epochs=args.epochs,
+        num_train_epochs=num_epochs,
+        max_steps=max_steps,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
