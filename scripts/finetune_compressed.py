@@ -13,6 +13,7 @@ Usage:
 import argparse
 import os
 import sys
+import shutil
 import torch
 from transformers import AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling
 from datasets import load_dataset
@@ -208,9 +209,27 @@ def main():
     trainer.save_model(args.out)
     tokenizer.save_pretrained(args.out)
     
+    # Copy custom architecture files to make the checkpoint self-contained
+    print("\nCopying custom architecture files...")
+    architecture_files = [
+        "configuration_gpt2_compressed.py",
+        "modeling_gpt2_compressed.py",
+        "__init__.py"
+    ]
+    
+    for fname in architecture_files:
+        src_path = os.path.join(args.model, fname)
+        if os.path.exists(src_path):
+            dst_path = os.path.join(args.out, fname)
+            shutil.copy2(src_path, dst_path)
+            print(f"  ✓ Copied {fname}")
+        else:
+            print(f"  ⚠ {fname} not found in {args.model}")
+    
     print("\n" + "="*60)
     print("Training completed successfully!")
     print(f"Model saved to: {args.out}")
+    print("Output is now a self-contained HuggingFace repository")
     print("="*60)
 
 
