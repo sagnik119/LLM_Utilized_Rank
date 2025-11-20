@@ -93,38 +93,29 @@ def apply_compression(
         idx = torch.argsort(eigvals, descending=True)
         U = eigvecs[:, idx][:, :r].to(W.device)  # (d_out × r)
 
-        # Compressed factors
+        # Compute A, B but DO NOT apply projection unless factorizing
         A = U                           # (d_out × r)
         B = (U.T @ W)                   # (r × d_in)
-        W_prime = A @ B                 # (d_out × d_in)
 
-        # Decide factorization
+        # Check parameter efficiency
         do_factorize = should_factorize(d_out, d_in, r, threshold=factorize_threshold)
 
         if do_factorize:
-            # Import FactorizedLinear
+            # Use factorized form
             from .modeling_gpt2_compressed import FactorizedLinear
             
-            # Get bias if present
             bias = module.bias.data if module.bias is not None else None
-            
-            # Create FactorizedLinear directly with A, B matrices
             factorized = FactorizedLinear(A, B, bias)
 
-            # Replace module
             parent, attr = get_parent_and_attr(model, name)
             setattr(parent, attr, factorized)
 
             print(f"[FACTORIZED] {name}: ({d_out},{d_in}) → r={r}")
             print(f"[SAVE] Factorized {name} → A={A.shape}, B={B.shape}")
         else:
-            # Write weight directly
-            if HAS_CONV1D and isinstance(module, Conv1D):
-                module.weight.data.copy_(W_prime.T)
-            else:
-                module.weight.data.copy_(W_prime)
-
-            print(f"[COMPRESSED] {name}: r={r} kept as single layer")
+            # DO NOT MODIFY WEIGHT AT ALL
+            # Keep original W exactly as is
+            print(f"[SKIPPED] {name}: r={r} not parameter-efficient; layer left unchanged")
 
 
 def compute_compression_stats(
