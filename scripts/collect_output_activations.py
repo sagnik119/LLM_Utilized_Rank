@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--dataset", type=str, default="wikitext", help="Dataset name")
     parser.add_argument("--config", type=str, default="wikitext-2-raw-v1", help="Dataset config")
     parser.add_argument("--split", type=str, default="train", help="Dataset split")
-    parser.add_argument("--samples", type=int, default=20000, help="Max token count to process")
+    parser.add_argument("--samples", type=int, default=20000, help="Max number of examples to process")
     parser.add_argument("--max-length", type=int, default=512, help="Maximum sequence length")
     parser.add_argument("--out", type=str, required=True, help="Output file path")
     args = parser.parse_args()
@@ -122,11 +122,11 @@ def main():
     ds = load_dataset(args.dataset, args.config, split=args.split)
     
     # Process samples
-    print(f"Collecting output statistics from ~{args.samples} tokens...")
-    total_tokens = 0
+    print(f"Collecting output statistics from {args.samples} examples...")
+    num_examples = 0
 
-    for ex in tqdm(ds):
-        if total_tokens >= args.samples:
+    for ex in tqdm(ds, total=min(args.samples, len(ds))):
+        if num_examples >= args.samples:
             break
         
         text = ex["text"]
@@ -141,10 +141,10 @@ def main():
             truncation=True,
         ).to(device)
 
-        total_tokens += enc["input_ids"].numel()
-        
         # Forward pass (outputs captured by hooks)
         _ = model(**enc)
+        
+        num_examples += 1
 
     # Remove hooks
     for h in hooks:
@@ -153,7 +153,7 @@ def main():
     # Save statistics
     print(f"Saving Y^T Y stats for {len(yty)} modules to {args.out}")
     torch.save(dict(yty), args.out)
-    print(f"Processed {total_tokens} total tokens")
+    print(f"Processed {num_examples} examples")
     print("Done!")
 
 
