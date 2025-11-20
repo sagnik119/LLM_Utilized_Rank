@@ -42,7 +42,10 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train"):
             ds = load_dataset(config[0], split=config[2])
     else:
         # Try loading directly
-        ds = load_dataset(dataset_name, split=split)
+        if dataset_name == "c4":
+            ds = load_dataset("c4", "en.noblocklist", split=split)  # or "en.noblocklist"
+        else:
+            ds = load_dataset(dataset_name, split=split)
     
     # Tokenize
     def tokenize_function(examples):
