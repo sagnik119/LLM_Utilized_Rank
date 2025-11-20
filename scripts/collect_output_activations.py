@@ -85,25 +85,11 @@ def main():
                 return hook
             hooks.append(module.register_forward_hook(make_hook(name)))
 
-        # Attention combined QKV projection
+        # Attention combined QKV projection (treat as single layer)
         if name.endswith(".attn.c_attn"):
             def make_hook(name_):
                 def hook(_, __, output):
-                    # output: (B, T, 3*d_model) for GPT-2
-                    # Split into Q, K, V
-                    if output.dim() == 3:
-                        B, T, threeD = output.shape
-                        d = threeD // 3
-                        y_q = output[..., :d]
-                        y_k = output[..., d:2*d]
-                        y_v = output[..., 2*d:]
-
-                        add_cov(name_ + ".q", y_q)
-                        add_cov(name_ + ".k", y_k)
-                        add_cov(name_ + ".v", y_v)
-                    else:
-                        # Fallback: treat as single output
-                        add_cov(name_, output)
+                    add_cov(name_, output)
                 return hook
             hooks.append(module.register_forward_hook(make_hook(name)))
 

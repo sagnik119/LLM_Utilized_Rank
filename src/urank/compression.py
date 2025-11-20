@@ -74,7 +74,7 @@ def apply_compression(
             continue
 
         module = name_to_module[name]
-        C = yty_map[name].float()  # Y^T Y
+        C = yty_map[name].float().to(W.device)  # Y^T Y
         r = cfg["r"]
 
         # Extract weight matrix W as (d_out, d_in)
@@ -89,7 +89,7 @@ def apply_compression(
         # Eigen-decomposition of Y^T Y
         eigvals, eigvecs = torch.linalg.eigh(C)
         idx = torch.argsort(eigvals, descending=True)
-        U = eigvecs[:, idx][:, :r]  # (d_out × r)
+        U = eigvecs[:, idx][:, :r].to(W.device)  # (d_out × r)
 
         # Compressed factors
         A = U                           # (d_out × r)
