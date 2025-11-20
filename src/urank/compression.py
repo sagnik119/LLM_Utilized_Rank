@@ -102,22 +102,21 @@ def apply_compression(
         do_factorize = should_factorize(d_out, d_in, r, threshold=factorize_threshold)
 
         if do_factorize:
-            # Build factorized Sequential(B → A)
-            lin_right = nn.Linear(d_in, r, bias=False)
-            lin_left = nn.Linear(r, d_out, bias=False)
-
-            lin_left.weight.data.copy_(A)
-            lin_right.weight.data.copy_(B)
-
-            # Bias: keep on left
-            if module.bias is not None:
-                lin_left.bias = module.bias
+            # Import FactorizedLinear
+            from .modeling_gpt2_compressed import FactorizedLinear
+            
+            # Get bias if present
+            bias = module.bias.data if module.bias is not None else None
+            
+            # Create FactorizedLinear directly with A, B matrices
+            factorized = FactorizedLinear(A, B, bias)
 
             # Replace module
             parent, attr = get_parent_and_attr(model, name)
-            setattr(parent, attr, nn.Sequential(lin_right, lin_left))
+            setattr(parent, attr, factorized)
 
             print(f"[FACTORIZED] {name}: ({d_out},{d_in}) → r={r}")
+            print(f"[SAVE] Factorized {name} → A={A.shape}, B={B.shape}")
         else:
             # Write weight directly
             if HAS_CONV1D and isinstance(module, Conv1D):

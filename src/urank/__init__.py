@@ -13,6 +13,8 @@ from .activation_cache import ActivationStatsCollector
 from .subspace import topk_from_xtx, projector_from_vecs
 from .transform import transform_weight_ps_pt, factorize_rank
 from .rank_search import RankSearcher
+from .modeling_gpt2_compressed import GPT2CompressedLMHeadModel, FactorizedLinear
+from .configuration_gpt2_compressed import GPT2CompressedConfig
 
 __version__ = "0.1.0"
 
@@ -25,4 +27,7 @@ __all__ = [
     "transform_weight_ps_pt",
     "factorize_rank",
     "RankSearcher",
+    "GPT2CompressedLMHeadModel",
+    "GPT2CompressedConfig",
+    "FactorizedLinear",
 ]

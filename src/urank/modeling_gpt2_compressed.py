@@ -2,13 +2,12 @@
 Custom GPT-2 model class that supports factorized low-rank linear layers.
 
 This module provides a drop-in replacement for GPT2LMHeadModel that can handle
-layers factorized as Sequential(A, B) while maintaining compatibility with
-Hugging Face transformers for fine-tuning.
+layers factorized as A @ B matrices, loading them from state dict.
 """
 
 import torch
 import torch.nn as nn
-from transformers import GPT2LMHeadModel
+from transformers.models.gpt2.modeling_gpt2 import GPT2LMHeadModel, Conv1D
 from typing import Optional
 
 # IMPORTANT: load the config from separate file
@@ -17,226 +16,140 @@ from .configuration_gpt2_compressed import GPT2CompressedConfig
 
 class FactorizedLinear(nn.Module):
     """
-    A factorized linear layer that computes y = (B @ A) @ x without fusing.
+    Low-rank replacement for nn.Linear or Conv1D:
+        y = A(Bx)     where A ∈ R[d_out × r], B ∈ R[r × d_in]
     
-    This keeps the low-rank structure A (r, d) and B (m, r) separate,
-    enabling parameter-efficient storage and fine-tuning.
-    
-    IMPORTANT: This module is designed to be LoRA-compatible. When using PEFT,
-    specify target_modules with submodule patterns like:
-        - "*.A" to target all A matrices
-        - "*.B" to target all B matrices
-        - Or specific patterns like "attn.*.A" for attention only
-    
-    Args:
-        in_features: Input dimension d
-        out_features: Output dimension m
-        rank: Bottleneck rank r
-        bias: Whether to include bias term
+    This implementation directly stores A and B as Parameters,
+    making them compatible with standard PyTorch serialization.
     """
     
-    def __init__(self, in_features: int, out_features: int, rank: int, bias: bool = True):
+    def __init__(self, A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tensor] = None):
         super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.rank = rank
+        d_out, r = A.shape
+        r2, d_in = B.shape
+        assert r == r2, f"Rank mismatch: A has rank {r}, B has rank {r2}"
         
-        # A: (r, d) - first projection
-        # Named as 'A' to be accessible to PEFT via "*.A" pattern
-        self.A = nn.Linear(in_features, rank, bias=False)
+        self.d_out = d_out
+        self.d_in = d_in
+        self.rank = r
         
-        # B: (m, r) - second projection
-        # Named as 'B' to be accessible to PEFT via "*.B" pattern
-        self.B = nn.Linear(rank, out_features, bias=bias)
+        # Store as parameters for automatic grad + serialization
+        self.A = nn.Parameter(A.clone())  # (d_out, r)
+        self.B = nn.Parameter(B.clone())  # (r, d_in)
+
+        if bias is not None:
+            self.bias = nn.Parameter(bias.clone())
+        else:
+            self.register_parameter('bias', None)
     
     def forward(self, x):
-        """Forward pass: y = B(A(x))"""
-        return self.B(self.A(x))
-    
-    def get_lora_target_modules(self):
         """
-        Return the submodules that should receive LoRA adapters.
+        Forward pass: y = A @ (B @ x^T)^T + bias
         
-        Returns:
-            List of (name, module) tuples for LoRA injection
+        Handles both 2D and 3D inputs:
+        - x: (..., d_in) → y: (..., d_out)
         """
-        return [("A", self.A), ("B", self.B)]
-    
-    @classmethod
-    def from_sequential(cls, sequential: nn.Sequential):
-        """
-        Create FactorizedLinear from Sequential(Linear, Linear).
+        # x: (..., d_in)
+        x = torch.matmul(x, self.B.T)  # (..., r)
+        x = torch.matmul(x, self.A.T)  # (..., d_out)
         
-        Args:
-            sequential: nn.Sequential containing two Linear layers
-        """
-        if len(sequential) != 2:
-            raise ValueError(f"Expected Sequential with 2 layers, got {len(sequential)}")
+        if self.bias is not None:
+            x = x + self.bias
         
-        A_module, B_module = sequential[0], sequential[1]
-        
-        if not (isinstance(A_module, nn.Linear) and isinstance(B_module, nn.Linear)):
-            raise ValueError("Sequential must contain two nn.Linear layers")
-        
-        factorized = cls(
-            in_features=A_module.in_features,
-            out_features=B_module.out_features,
-            rank=A_module.out_features,
-            bias=B_module.bias is not None
-        )
-        
-        # Copy weights
-        factorized.A.weight.data = A_module.weight.data.clone()
-        factorized.B.weight.data = B_module.weight.data.clone()
-        
-        if B_module.bias is not None:
-            factorized.B.bias.data = B_module.bias.data.clone()
-        
-        return factorized
+        return x
     
     def extra_repr(self):
-        return f'in_features={self.in_features}, out_features={self.out_features}, rank={self.rank}'
+        return f'd_in={self.d_in}, d_out={self.d_out}, rank={self.rank}'
+
+
+def convert_linear_to_factorized(module, state_dict, prefix=""):
+    """
+    If state_dict contains A and B for this module, load as a FactorizedLinear.
+    
+    Args:
+        module: Original Linear or Conv1D module
+        state_dict: Full model state dict
+        prefix: Prefix for this module's keys in state_dict
+        
+    Returns:
+        FactorizedLinear if A and B found, otherwise original module
+    """
+    A_key = prefix + ".A"
+    B_key = prefix + ".B"
+    bias_key = prefix + ".bias"
+    
+    if A_key in state_dict and B_key in state_dict:
+        A = state_dict[A_key]
+        B = state_dict[B_key]
+        bias = state_dict.get(bias_key, None)
+        return FactorizedLinear(A, B, bias)
+    
+    return module  # not factorized
 
 
 class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
     """
     GPT-2 Language Model with support for factorized low-rank layers.
     
-    This class extends GPT2LMHeadModel to properly load and save models
-    that have been compressed with factorized linear layers.
-    
-    Usage:
-        # Load compressed model
-        model = GPT2CompressedLMHeadModel.from_pretrained("path/to/compressed")
-        
-        # Use normally for training/inference
-        outputs = model(input_ids)
-        
-        # Save (preserves factorized structure)
-        model.save_pretrained("path/to/save")
+    This class extends GPT2LMHeadModel to automatically detect and load
+    factorized layers from the state dict.
     """
     config_class = GPT2CompressedConfig
-    
-    def __init__(self, config):
-        super().__init__(config)
-        self._replace_sequential_with_factorized()
-    
-    def _replace_sequential_with_factorized(self):
-        """
-        Replace all Sequential(Linear, Linear) with FactorizedLinear.
-        """
-        def replace_in_module(module, parent_name=""):
-            for name, child in list(module.named_children()):
-                full_name = f"{parent_name}.{name}" if parent_name else name
-                
-                # Check if this is a factorized Sequential
-                if isinstance(child, nn.Sequential) and len(child) == 2:
-                    if isinstance(child[0], nn.Linear) and isinstance(child[1], nn.Linear):
-                        # Replace with FactorizedLinear
-                        factorized = FactorizedLinear.from_sequential(child)
-                        setattr(module, name, factorized)
-                        print(f"Converted {full_name} to FactorizedLinear "
-                              f"(rank={factorized.rank})")
-                
-                # Recurse
-                replace_in_module(child, full_name)
-        
-        replace_in_module(self)
     
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         """
         Load a compressed GPT-2 model with factorized layers.
         
-        This method detects factorized state dict keys and rebuilds the architecture accordingly.
+        This method detects .A and .B weight keys and replaces the corresponding
+        modules with FactorizedLinear before loading weights.
         """
         import os
-        from safetensors.torch import load_file
+        from safetensors.torch import load_file as safe_load
         
-        # Load state dict to inspect structure
-        model_path = pretrained_model_name_or_path
-        safetensors_path = os.path.join(model_path, "model.safetensors")
-        pytorch_path = os.path.join(model_path, "pytorch_model.bin")
+        kwargs.setdefault("trust_remote_code", True)
         
-        if os.path.exists(safetensors_path):
-            state_dict = load_file(safetensors_path)
-            print(f"Loaded state dict from safetensors")
-        elif os.path.exists(pytorch_path):
-            state_dict = torch.load(pytorch_path, map_location="cpu")
-            print(f"Loaded state dict from pytorch_model.bin")
-        else:
-            # Fall back to standard loading
+        # Try to load state dict first to detect structure
+        model_path = str(pretrained_model_name_or_path)
+        safe_path = os.path.join(model_path, "model.safetensors")
+        pt_path = os.path.join(model_path, "pytorch_model.bin")
+        
+        state_dict = None
+        if os.path.exists(safe_path):
+            state_dict = safe_load(safe_path)
+            print(f"[LOAD] Loaded state dict from safetensors")
+        elif os.path.exists(pt_path):
+            state_dict = torch.load(pt_path, map_location="cpu")
+            print(f"[LOAD] Loaded state dict from pytorch_model.bin")
+        
+        if state_dict is None:
+            # No local checkpoint, use standard loading
             return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         
-        # Detect factorized layers by looking for both formats:
-        # - Modern format: .A.weight / .B.weight (from FactorizedLinear)
-        # - Legacy format: .0.weight / .1.weight (from Sequential)
-        factorized_layers = set()
+        # Detect factorized layers
+        factorized_prefixes = set()
         for key in state_dict.keys():
-            if key.endswith(".A.weight"):
-                # Modern FactorizedLinear format
-                base_key = key[:-len(".A.weight")]
-                factorized_layers.add(base_key)
-            elif key.endswith(".0.weight"):
-                # Legacy Sequential(Linear, Linear) format
-                base_key = key[:-len(".0.weight")]
-                factorized_layers.add(base_key)
+            if ".A" in key:
+                # Extract base name (everything before .A)
+                prefix = key.split(".A")[0]
+                factorized_prefixes.add(prefix)
         
-        print(f"Detected {len(factorized_layers)} factorized layers")
+        print(f"[LOAD] Detected {len(factorized_prefixes)} factorized layers")
         
-        # Load config (try compressed config first, fall back to GPT2Config)
+        # Load config
         try:
-            config = GPT2CompressedConfig.from_pretrained(pretrained_model_name_or_path)
+            config = GPT2CompressedConfig.from_pretrained(model_path)
         except:
             from transformers import GPT2Config
-            config = GPT2Config.from_pretrained(pretrained_model_name_or_path)
+            config = GPT2Config.from_pretrained(model_path)
         
-        # Create instance of our custom class (not GPT2LMHeadModel)
+        # Create base model
         model = cls(config)
         
-        # Now replace factorized layers with FactorizedLinear modules
-        for layer_name in factorized_layers:
-            # Try modern format first (.A.weight, .B.weight)
-            weight_A_key = f"{layer_name}.A.weight"
-            weight_B_key = f"{layer_name}.B.weight"
-            bias_B_key = f"{layer_name}.B.bias"
-            
-            # Fallback to legacy format (.0.weight, .1.weight)
-            weight_0_key = f"{layer_name}.0.weight"
-            weight_1_key = f"{layer_name}.1.weight"
-            bias_1_key = f"{layer_name}.1.bias"
-            
-            # Determine which format is present
-            if weight_A_key in state_dict and weight_B_key in state_dict:
-                # Modern FactorizedLinear format
-                A_weight = state_dict[weight_A_key]  # (r, d)
-                B_weight = state_dict[weight_B_key]  # (m, r)
-                B_bias = state_dict.get(bias_B_key)  # (m,)
-            elif weight_0_key in state_dict and weight_1_key in state_dict:
-                # Legacy Sequential format
-                A_weight = state_dict[weight_0_key]  # (r, d)
-                B_weight = state_dict[weight_1_key]  # (m, r)
-                B_bias = state_dict.get(bias_1_key)  # (m,)
-            else:
-                print(f"  Warning: Could not find weights for {layer_name}, skipping")
-                continue
-                
-            # Create FactorizedLinear
-            factorized = FactorizedLinear(
-                in_features=A_weight.shape[1],  # d
-                out_features=B_weight.shape[0],  # m
-                rank=A_weight.shape[0],          # r
-                bias=B_bias is not None
-            )
-            
-            # Load weights
-            factorized.A.weight.data = A_weight
-            factorized.B.weight.data = B_weight
-            if B_bias is not None:
-                factorized.B.bias.data = B_bias
-            
-            # Navigate to parent and replace
-            parts = layer_name.split(".")
+        # Replace factorized modules
+        for prefix in factorized_prefixes:
+            # Navigate to parent module
+            parts = prefix.split(".")
             parent = model
             for part in parts[:-1]:
                 if part.isdigit():
@@ -244,24 +157,23 @@ class GPT2CompressedLMHeadModel(GPT2LMHeadModel):
                 else:
                     parent = getattr(parent, part)
             
-            setattr(parent, parts[-1], factorized)
-            print(f"Replaced {layer_name} with FactorizedLinear(rank={factorized.rank})")
+            attr_name = parts[-1]
+            orig_module = getattr(parent, attr_name)
+            
+            # Replace with factorized version
+            factorized = convert_linear_to_factorized(orig_module, state_dict, prefix)
+            
+            if isinstance(factorized, FactorizedLinear):
+                setattr(parent, attr_name, factorized)
+                print(f"[LOAD] Replaced {prefix} with FactorizedLinear(rank={factorized.rank})")
         
-        # Load remaining (non-factorized) weights
-        # Filter out factorized keys (both modern .A/.B and legacy .0/.1 formats)
-        filtered_state_dict = {}
-        for k, v in state_dict.items():
-            is_factorized = False
-            for layer in factorized_layers:
-                if k.startswith(f"{layer}.A.") or k.startswith(f"{layer}.B.") or \
-                   k.startswith(f"{layer}.0.") or k.startswith(f"{layer}.1."):
-                    is_factorized = True
-                    break
-            if not is_factorized:
-                filtered_state_dict[k] = v
+        # Load all weights (factorized modules will receive A, B, bias)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
         
-        missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
-        print(f"Loaded non-factorized weights (missing: {len(missing)}, unexpected: {len(unexpected)})")
+        if missing:
+            print(f"[LOAD] Missing keys: {len(missing)}")
+        if unexpected:
+            print(f"[LOAD] Unexpected keys: {len(unexpected)}")
         
         return model
 
