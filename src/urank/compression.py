@@ -74,7 +74,6 @@ def apply_compression(
             continue
 
         module = name_to_module[name]
-        C = yty_map[name].float().to(W.device)  # Y^T Y
         r = cfg["r"]
 
         # Extract weight matrix W as (d_out, d_in)
@@ -82,6 +81,9 @@ def apply_compression(
             W = module.weight.data.T.float()
         else:
             W = module.weight.data.float()
+        
+        # Load C and move to same device as W
+        C = yty_map[name].float().to(W.device)  # Y^T Y
 
         d_out, d_in = W.shape
         assert C.shape[0] == d_out, f"Y^T Y wrong size for {name}"
