@@ -114,33 +114,6 @@ def run_lm_eval(
     elif not isinstance(device, str):
         raise ValueError(f"Device must be a string, not: {device}")
 
-    # Register custom architecture so Transformers AutoModel can load it
-    # This must happen BEFORE HFLM tries to load the model
-    import os
-    if trust_remote_code and os.path.exists(model_name_or_path):
-        modeling_file = os.path.join(model_name_or_path, "modeling_gpt2_compressed.py")
-        config_file = os.path.join(model_name_or_path, "configuration_gpt2_compressed.py")
-        
-        if os.path.exists(modeling_file) and os.path.exists(config_file):
-            # Pre-register custom config and model before lm-eval loads it
-            import sys
-            sys.path.insert(0, model_name_or_path)
-            try:
-                from configuration_gpt2_compressed import GPT2CompressedConfig
-                from modeling_gpt2_compressed import GPT2CompressedLMHeadModel
-                from transformers import AutoConfig, AutoModelForCausalLM
-                
-                AutoConfig.register("gpt2_compressed", GPT2CompressedConfig)
-                AutoModelForCausalLM.register(GPT2CompressedConfig, GPT2CompressedLMHeadModel)
-                
-                print(f"[LM-EVAL] Registered architecture: gpt2_compressed")
-                print(f"  Config: {GPT2CompressedConfig}")
-                print(f"  Model: {GPT2CompressedLMHeadModel}")
-            except Exception as reg_error:
-                warnings.warn(f"[LM-EVAL WARNING] Failed to register custom architecture: {reg_error}")
-            finally:
-                sys.path.pop(0)
-
     # Create model wrapper
     try:
         model = HFLM(
