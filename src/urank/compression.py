@@ -41,6 +41,79 @@ def should_factorize(m, d, r, threshold=None):
     return r * (m + d) < m * d
 
 
+def apply_weight_svd_compression(
+    model: nn.Module,
+    ranks: Dict[str, Dict],
+    factorize_threshold: Optional[float] = None,
+):
+    """
+    Apply weight-SVD-based compression (baseline method, no activation data).
+    
+    Args:
+        model: GPT-family model (Linear/Conv1D weights)
+        ranks: dict: layer_name → {"r": int, "d_out": int, "d_in": int, "energy": float}
+        factorize_threshold: optional compression ratio threshold
+    """
+    # Map module names to Linear/Conv1D modules
+    name_to_module = {}
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear) or (HAS_CONV1D and isinstance(module, Conv1D)):
+            name_to_module[name] = module
+
+    # Process each ranked layer
+    for name, cfg in ranks.items():
+        if name not in name_to_module:
+            print(f"[WARN] Layer not found in model: {name}")
+            continue
+
+        module = name_to_module[name]
+        r = cfg["r"]
+
+        # Extract weight matrix W as (d_out, d_in)
+        if HAS_CONV1D and isinstance(module, Conv1D):
+            W = module.weight.data.T.float()
+        else:
+            W = module.weight.data.float()
+        
+        d_out, d_in = W.shape
+
+        # Check parameter efficiency
+        do_factorize = should_factorize(d_out, d_in, r, threshold=factorize_threshold)
+
+        if do_factorize:
+            # Perform SVD on W directly
+            with torch.no_grad():
+                U, S, Vh = torch.linalg.svd(W, full_matrices=False)
+                
+                # Truncate to rank r
+                U_r = U[:, :r]              # (d_out, r)
+                S_r = S[:r]                 # (r,)
+                Vh_r = Vh[:r, :]            # (r, d_in)
+                
+                # W ≈ U_r @ diag(S_r) @ Vh_r
+                # For FactorizedLinear: y = x @ B^T @ A^T
+                # Set A = U_r, B = diag(S_r) @ Vh_r
+                A = U_r                             # (d_out, r)
+                B = torch.diag(S_r) @ Vh_r          # (r, d_in)
+            
+            # Get bias if present
+            bias = module.bias.data if module.bias is not None else None
+            
+            # Create FactorizedLinear
+            from .modeling_gpt2_compressed import FactorizedLinear
+            factorized = FactorizedLinear(A, B, bias)
+
+            parent, attr = get_parent_and_attr(model, name)
+            setattr(parent, attr, factorized)
+
+            print(f"[FACTORIZED] {name}: ({d_out},{d_in}) → r={r}")
+            print(f"[SAVE] Factorized {name} → A={A.shape}, B={B.shape}")
+        else:
+            # DO NOT MODIFY WEIGHT
+            # Keep original W exactly as is
+            print(f"[SKIPPED] {name}: r={r} not parameter-efficient; layer left unchanged")
+
+
 def apply_compression(
     model: nn.Module,
     yty_map: Dict[str, torch.Tensor],
@@ -48,7 +121,7 @@ def apply_compression(
     factorize_threshold: Optional[float] = None,
 ):
     """
-    Apply Y^T Y-based spectral compression to each layer.
+    Apply Y^T Y-based spectral compression to each layer (utilized rank method).
 
     Args:
         model: GPT-family model (Linear/Conv1D weights)

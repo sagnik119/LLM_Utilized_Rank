@@ -29,16 +29,19 @@ from urank.compression import apply_compression
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Apply Y^T Y-based compression")
+    parser = argparse.ArgumentParser(description="Apply compression (utilized rank or weight SVD)")
     parser.add_argument("--model", type=str, required=True, help="Model name or path")
     parser.add_argument("--ranks", type=str, required=True,
-                        help="JSON file produced by search_ranks_energy.py")
-    parser.add_argument("--stats", type=str, required=True,
-                        help="Path to Y^T Y statistics (.pt)")
+                        help="JSON file with rank assignments")
+    parser.add_argument("--stats", type=str, default=None,
+                        help="Path to Y^T Y statistics (.pt) - required for utilized rank mode")
     parser.add_argument("--out", type=str, required=True,
                         help="Directory to save compressed model")
     parser.add_argument("--factorize-threshold", type=float, default=None,
                         help="Optional parameter budget threshold for factorization")
+    parser.add_argument("--mode", type=str, default="utilized",
+                        choices=["utilized", "weight_svd"],
+                        help="Compression mode: 'utilized' uses Y^T Y stats, 'weight_svd' uses naive SVD on weights")
     args = parser.parse_args()
 
     # Device
@@ -56,22 +59,36 @@ def main():
         ranks = json.load(f)
     print(f"Loaded ranks for {len(ranks)} layers")
 
-    # Load Y^T Y statistics
-    print(f"Loading Y^T Y statistics from: {args.stats}")
-    yty_map = torch.load(args.stats, map_location="cpu")
-
     # Original param count
     orig_params = sum(p.numel() for p in model.parameters())
     print(f"Original parameters: {orig_params:,}")
 
-    # Apply compression
-    print("\nApplying compression...")
-    apply_compression(
-        model=model,
-        yty_map=yty_map,
-        ranks=ranks,
-        factorize_threshold=args.factorize_threshold,
-    )
+    # Apply compression based on mode
+    if args.mode == "utilized":
+        # Utilized rank mode: requires Y^T Y statistics
+        if args.stats is None:
+            raise ValueError("--stats is required for utilized rank mode")
+        
+        print(f"Loading Y^T Y statistics from: {args.stats}")
+        yty_map = torch.load(args.stats, map_location="cpu")
+        
+        print("\nApplying utilized rank compression...")
+        apply_compression(
+            model=model,
+            yty_map=yty_map,
+            ranks=ranks,
+            factorize_threshold=args.factorize_threshold,
+        )
+    
+    elif args.mode == "weight_svd":
+        # Weight SVD mode: no activation data needed
+        print("\nApplying weight-SVD compression...")
+        from urank.compression import apply_weight_svd_compression
+        apply_weight_svd_compression(
+            model=model,
+            ranks=ranks,
+            factorize_threshold=args.factorize_threshold,
+        )
 
     # Compressed param count
     comp_params = sum(p.numel() for p in model.parameters())
