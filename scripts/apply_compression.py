@@ -40,8 +40,8 @@ def main():
     parser.add_argument("--factorize-threshold", type=float, default=None,
                         help="Optional parameter budget threshold for factorization")
     parser.add_argument("--mode", type=str, default="utilized",
-                        choices=["utilized", "weight_svd"],
-                        help="Compression mode: 'utilized' uses Y^T Y stats, 'weight_svd' uses naive SVD on weights")
+                        choices=["utilized", "weight_svd", "hybrid"],
+                        help="Compression mode: 'utilized' uses Y^T Y projection, 'weight_svd' uses naive SVD, 'hybrid' uses Y^T Y ranks with SVD factorization")
     args = parser.parse_args()
 
     # Device
@@ -86,6 +86,23 @@ def main():
         from urank.compression import apply_weight_svd_compression
         apply_weight_svd_compression(
             model=model,
+            ranks=ranks,
+            factorize_threshold=args.factorize_threshold,
+        )
+    
+    elif args.mode == "hybrid":
+        # Hybrid mode: Y^T Y for rank selection, naive SVD for factorization
+        if args.stats is None:
+            raise ValueError("--stats is required for hybrid mode (rank selection)")
+        
+        print(f"Loading Y^T Y statistics from: {args.stats}")
+        yty_map = torch.load(args.stats, map_location="cpu")
+        
+        print("\nApplying hybrid compression (Y^T Y ranks + SVD factorization)...")
+        from urank.compression import apply_hybrid_compression
+        apply_hybrid_compression(
+            model=model,
+            yty_map=yty_map,
             ranks=ranks,
             factorize_threshold=args.factorize_threshold,
         )
