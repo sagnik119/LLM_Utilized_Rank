@@ -89,12 +89,12 @@ def main():
             yty[name] += C
 
     # Register hooks for all candidate layers (architecture-aware)
-    # FIX: Use default argument to capture name correctly
+    # FIX: Correct lambda signature for PyTorch hooks (module, input, output)
     hooks = []
 
     for name, module in iter_candidate_linear_modules(model):
         def make_hook(layer_name):
-            return lambda _, __, output, name=layer_name: add_cov(name, output)
+            return lambda module, inp, out: add_cov(layer_name, out)
         hooks.append(module.register_forward_hook(make_hook(name)))
 
     print(f"Registered hooks on {len(hooks)} layers (architecture: {model.__class__.__name__})")
