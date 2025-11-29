@@ -282,6 +282,8 @@ python scripts/collect_output_activations.py \
   --split train \
   --samples 1000000 \
   --max-length 512 \
+  --batch-size 64 \
+  --use-bf16 \
   --out stats/llama2_7b_yty.pt
 
 python scripts/search_ranks_energy.py \

@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--split", type=str, default="train", help="Dataset split")
     parser.add_argument("--samples", type=int, default=1000000, help="Max number of tokens to process")
     parser.add_argument("--max-length", type=int, default=512, help="Maximum sequence length")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for processing")
+    parser.add_argument("--use-bf16", action="store_true", help="Use bfloat16 for faster inference")
     parser.add_argument("--out", type=str, required=True, help="Output file path")
     args = parser.parse_args()
 
@@ -44,9 +46,14 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    # Load model and tokenizer
+    # Load model and tokenizer with optimizations
     print(f"Loading model: {args.model}")
-    model = AutoModelForCausalLM.from_pretrained(args.model).to(device)
+    dtype = torch.bfloat16 if args.use_bf16 else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype=dtype,
+        device_map="auto"
+    )
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
     if tokenizer.pad_token is None:
@@ -95,11 +102,13 @@ def main():
     print(f"Loading dataset: {args.dataset} ({args.config}) - {args.split}")
     ds = load_dataset(args.dataset, args.config, split=args.split)
     
-    # Process samples
+    # Process samples with batching
     print(f"Collecting output statistics from ~{args.samples} tokens...")
+    print(f"Using batch size: {args.batch_size}")
     total_tokens = 0
+    batch_texts = []
 
-    for ex in tqdm(ds):
+    for ex in tqdm(ds, desc="Processing batches"):
         if total_tokens >= args.samples:
             break
         
@@ -107,18 +116,41 @@ def main():
         if not text or not text.strip():
             continue
 
-        # Tokenize
+        batch_texts.append(text)
+        
+        # Process when batch is full
+        if len(batch_texts) >= args.batch_size:
+            # Tokenize batch
+            enc = tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                max_length=args.max_length,
+                truncation=True,
+                padding=True,
+            ).to(device)
+
+            total_tokens += enc["input_ids"].numel()
+            
+            # Forward pass (outputs captured by hooks)
+            _ = model(**enc, use_cache=False)
+            
+            # Clear batch and free memory
+            batch_texts = []
+            if device == "cuda":
+                torch.cuda.empty_cache()
+    
+    # Process remaining texts in incomplete batch
+    if batch_texts and total_tokens < args.samples:
         enc = tokenizer(
-            text,
+            batch_texts,
             return_tensors="pt",
             max_length=args.max_length,
             truncation=True,
+            padding=True,
         ).to(device)
-
-        total_tokens += enc["input_ids"].numel()
         
-        # Forward pass (outputs captured by hooks)
-        _ = model(**enc)
+        total_tokens += enc["input_ids"].numel()
+        _ = model(**enc, use_cache=False)
 
     # Remove hooks
     for h in hooks:

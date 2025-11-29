@@ -11,7 +11,7 @@ activation_collection:
   split: train
   samples: 1000000
   seq_len: 2048
-  batch_size: 1
+  batch_size: 32
 
 # Rank search settings
 rank_search:
