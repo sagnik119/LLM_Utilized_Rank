@@ -54,11 +54,15 @@ class LoRAFactorizedLinear(nn.Module):
         self.lora_r = lora_r
         
         # Base factors (compressed model weights)
-        self.A = nn.Parameter(A.clone(), requires_grad=not freeze_base)
-        self.B = nn.Parameter(B.clone(), requires_grad=not freeze_base)
+        # IMPORTANT: Must explicitly set requires_grad to freeze base weights
+        A_param = A.clone()
+        B_param = B.clone()
+        self.A = nn.Parameter(A_param, requires_grad=not freeze_base)
+        self.B = nn.Parameter(B_param, requires_grad=not freeze_base)
         
         if bias is not None:
-            self.bias = nn.Parameter(bias.clone(), requires_grad=not freeze_base)
+            bias_param = bias.clone()
+            self.bias = nn.Parameter(bias_param, requires_grad=not freeze_base)
         else:
             self.register_parameter('bias', None)
         
@@ -154,10 +158,11 @@ class LoRAFactorizedLinear(nn.Module):
         Returns:
             LoRAFactorizedLinear with same base weights
         """
+        # Use .detach() instead of .data to properly handle requires_grad
         return cls(
-            A=factorized_linear.A.data,
-            B=factorized_linear.B.data,
-            bias=factorized_linear.bias.data if factorized_linear.bias is not None else None,
+            A=factorized_linear.A.detach(),
+            B=factorized_linear.B.detach(),
+            bias=factorized_linear.bias.detach() if factorized_linear.bias is not None else None,
             lora_r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
