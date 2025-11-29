@@ -274,13 +274,76 @@ python scripts/eval_lm_eval.py --model ckpts/gpt2_compressed --tasks wikitext ar
 python scripts/eval_lm_eval.py --model exports/gpt2_lora_merged --tasks wikitext arc_easy \
   --out results_finetuned.json
 
+### Complete pipeline for Llama-2-7B (medium sized model)
+
+python scripts/collect_output_activations.py \
+  --model meta-llama/Llama-2-7b-hf \
+  --dataset wikitext \
+  --split train \
+  --samples 1000000 \
+  --max-length 512 \
+  --out stats/llama2_7b_yty.pt
+
+python scripts/search_ranks_energy.py \
+  --stats stats/llama2_7b_yty.pt \
+  --energy 0.99 \
+  --out ranks/llama2_7b_energy.json
+
+# Apply compression with Utilized rank (full method)
+python scripts/apply_compression.py \
+  --model meta-llama/Llama-2-7b-hf \
+  --ranks ranks/llama2_7b_energy.json \
+  --stats stats/llama2_7b_yty.pt \
+  --mode utilized \
+  --out ckpts/llama2_7b_compressed
+
+# OR hybrid baseline
+python scripts/apply_compression.py \
+  --model meta-llama/Llama-2-7b-hf \
+  --ranks ranks/llama2_7b_energy.json \
+  --stats stats/llama2_7b_yty.pt \
+  --mode hybrid \
+  --out ckpts/llama2_7b_hybrid
+
+# OR weight SVD baseline
+python scripts/search_ranks_weight_svd.py \
+  --model meta-llama/Llama-2-7b-hf \
+  --energy 0.9995 \
+  --out ranks/llama2_7b_weight_svd.json
+
+python scripts/apply_compression.py \
+  --model meta-llama/Llama-2-7b-hf \
+  --ranks ranks/llama2_7b_weight_svd.json \
+  --mode weight_svd \
+  --out ckpts/llama2_7b_weight_svd
+
+# Fine tune
+python scripts/finetune_compressed.py --preset full \
+  --model ckpts/llama2_7b_compressed \
+  --data redpajama \
+  --out outputs/llama2_7b_compressed_fullft \
+  --max-train-tokens 150000000 \
+  --lr 2e-5 \
+  --batch-size 1 \
+  --seq-length 2048
+
+# Evaluate
+python scripts/eval_lm_eval.py \
+  --model outputs/llama2_7b_compressed_fullft \
+  --tasks wikitext arc_easy hellaswag winogrande piqa \
+  --batch 4 \
+  --out results_llama2_7b.json
+
+
 ### Complete pipeline for Llama-3-8B (medium sized model)
 
 # 1. Collect activations (now architecture-aware!)
 python scripts/collect_output_activations.py \
   --model meta-llama/Meta-Llama-3-8B \
   --dataset wikitext \
-  --samples 500000 \
+  --split train \
+  --samples 1000000 \
+  --max-length 512 \
   --out stats/llama3_8b_yty.pt
 
 # 2. Search ranks (unchanged, works on any Y^T Y file)

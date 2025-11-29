@@ -1,0 +1,49 @@
+# Configuration for LLaMA 2 7B
+
+model:
+  name: meta-llama/Llama-2-7b-hf
+  type: causal_lm
+
+# Activation collection settings
+activation_collection:
+  dataset: wikitext
+  config: wikitext-2-raw-v1
+  split: train
+  samples: 1000000
+  seq_len: 2048
+  batch_size: 1
+
+# Rank search settings
+rank_search:
+  epsilon_percent: 0.1
+  energy_min: 0.85
+  energy_max: 0.9999
+  max_iters: 12
+  
+  # Filter for eligible layers (LLaMA attention and MLP)
+  layer_filter: "(self_attn\\.(q_proj|k_proj|v_proj|o_proj)|mlp\\.(gate_proj|up_proj|down_proj))"
+  
+  validation:
+    dataset: wikitext
+    config: wikitext-2-raw-v1
+    split: validation
+    samples: 5000
+    seq_len: 2048
+
+# Compression settings
+compression:
+  factorize_threshold: null  # Use standard criterion
+
+# Fine-tuning settings
+finetune:
+  dataset: wikitext
+  config: wikitext-2-raw-v1
+  epochs: 1
+  learning_rate: 1e-5
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  max_length: 2048
+  warmup_steps: 100
+  logging_steps: 50
+  save_steps: 500
+  fp16: true
