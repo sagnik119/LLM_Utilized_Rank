@@ -261,12 +261,24 @@ def main():
         mlm=False
     )
     
+    # IMPORTANT: Filter trainable params to prevent OOM
+    # HuggingFace Trainer creates optimizer states for ALL params by default,
+    # even frozen ones. This causes OOM with large base models + LoRA.
+    # Solution: manually create optimizer with only trainable params
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
+    
+    print(f"\nOptimizer setup:")
+    print(f"  Trainable params: {sum(p.numel() for p in trainable_params):,}")
+    print(f"  Memory for optimizer states: ~{sum(p.numel() for p in trainable_params) * 3 * 2 / 1e9:.2f} GB")
+    
     # Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         data_collator=data_collator,
+        optimizers=(optimizer, None),  # Pass custom optimizer to prevent OOM
     )
     
     # Train

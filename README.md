@@ -334,9 +334,9 @@ python scripts/finetune_compressed.py --preset lora \
   --out outputs/llama2_7b_compressed_loraft \
   --max-train-tokens 10000000 \
   --lr 2e-5 \
-  --batch-size 2 \
+  --batch-size 1 \
   --seq-length 512 \
-  --lora-r 64 \
+  --lora-r 16 \
   --lora-alpha 16 \
   --lora-dropout 0.05
 
