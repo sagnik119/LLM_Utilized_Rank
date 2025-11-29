@@ -164,6 +164,13 @@ def main():
     
     print(f"Model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
+    # CRITICAL: Freeze ALL parameters first (before LoRA conversion)
+    # This ensures optimizer will ONLY see the LoRA params after conversion
+    print("\nFreezing all base parameters...")
+    for name, param in model.named_parameters():
+        param.requires_grad = False
+    print(f"  All {sum(p.numel() for p in model.parameters()):,} base parameters frozen")
+    
     # Apply fine-tuning based on preset
     if args.preset == "lora":
         print(f"\nApplying Custom LoRA to FactorizedLinear (r={args.lora_r}, alpha={args.lora_alpha})")
@@ -184,6 +191,15 @@ def main():
             )
         
         print(f"\n✓ Converted {num_converted} FactorizedLinear modules to LoRAFactorizedLinear")
+        
+        # CRITICAL: Unfreeze ONLY LoRA parameters after conversion
+        print("\nUnfreezing LoRA parameters...")
+        lora_param_count = 0
+        for name, param in model.named_parameters():
+            if "lora_" in name:
+                param.requires_grad = True
+                lora_param_count += param.numel()
+        print(f"  Unfroze {lora_param_count:,} LoRA parameters")
         
         # Print parameter counts
         param_counts = count_lora_parameters(model)
