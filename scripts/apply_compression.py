@@ -23,9 +23,53 @@ import json
 import shutil
 import torch
 from pathlib import Path
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from urank.compression import apply_compression
+
+
+# Architecture file mappings
+ARCH_FILES = {
+    "gpt2": (
+        "modeling_gpt2_compressed.py",
+        "configuration_gpt2_compressed.py",
+        "GPT2CompressedLMHeadModel",
+        "GPT2CompressedConfig"
+    ),
+    "llama": (
+        "modeling_llama_compressed.py",
+        "configuration_llama_compressed.py",
+        "LlamaCompressedForCausalLM",
+        "LlamaCompressedConfig"
+    )
+}
+
+
+def detect_architecture(model_name: str) -> str:
+    """
+    Detect model architecture from config.
+    
+    Args:
+        model_name: Model name or path
+        
+    Returns:
+        Architecture key ('gpt2' or 'llama')
+        
+    Raises:
+        ValueError: If architecture is not supported
+    """
+    try:
+        config = AutoConfig.from_pretrained(model_name)
+        model_type = config.model_type.lower()
+        
+        if model_type.startswith("gpt2"):
+            return "gpt2"
+        elif model_type.startswith("llama"):
+            return "llama"
+        else:
+            raise ValueError(f"Unsupported model_type: {model_type}")
+    except Exception as e:
+        raise ValueError(f"Failed to detect architecture for {model_name}: {e}")
 
 
 def main():
@@ -44,14 +88,38 @@ def main():
                         help="Compression mode: 'utilized' uses Y^T Y projection, 'weight_svd' uses naive SVD, 'hybrid' uses Y^T Y ranks with SVD factorization")
     args = parser.parse_args()
 
+    # Detect architecture
+    print(f"Detecting architecture for: {args.model}")
+    arch = detect_architecture(args.model)
+    print(f"  Detected: {arch}")
+    
+    if arch not in ARCH_FILES:
+        raise ValueError(f"Unsupported architecture: {arch}")
+    
+    model_file, config_file, arch_class, cfg_class = ARCH_FILES[arch]
+    
     # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     # Load model + tokenizer
+    # NOTE: Load on CPU first to avoid device_map issues with .float() conversion
     print(f"Loading model: {args.model}")
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32).to(device)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        # Do NOT use device_map="auto" when we need to call .float()
+    )
     tokenizer = AutoTokenizer.from_pretrained(args.model)
+    
+    # Convert to float32 for compression (more stable eigendecomposition)
+    print("Converting model to float32 for compression...")
+    model = model.float()
+    
+    # Now move to device
+    print(f"Moving model to {device}...")
+    model = model.to(device)
 
     # Load ranks
     print(f"Loading ranks from: {args.ranks}")
@@ -128,13 +196,10 @@ def main():
         json.dump(ranks, f, indent=2)
 
     # Copy custom architecture files for trust_remote_code
-    print("\nCopying custom architecture files...")
+    print(f"\nCopying custom architecture files ({arch})...")
     src_root = Path(__file__).parent.parent / "src" / "urank"
     
-    files_to_copy = [
-        "modeling_gpt2_compressed.py",
-        "configuration_gpt2_compressed.py"
-    ]
+    files_to_copy = [model_file, config_file]
     
     for fname in files_to_copy:
         src_file = src_root / fname
@@ -146,10 +211,10 @@ def main():
     
     # Write __init__.py
     (out_path / "__init__.py").write_text(
-        "from .modeling_gpt2_compressed import GPT2CompressedLMHeadModel\n"
-        "from .configuration_gpt2_compressed import GPT2CompressedConfig\n"
-        "\n"
-        "__all__ = ['GPT2CompressedLMHeadModel', 'GPT2CompressedConfig']\n"
+        f"from .{model_file[:-3]} import {arch_class}\n"
+        f"from .{config_file[:-3]} import {cfg_class}\n"
+        f"\n"
+        f"__all__ = ['{arch_class}', '{cfg_class}']\n"
     )
     print("  ✓ Created __init__.py")
     
@@ -158,14 +223,27 @@ def main():
     with open(config_path) as f:
         config = json.load(f)
     
-    config.update({
-        "model_type": "gpt2_compressed",
-        "architectures": ["GPT2CompressedLMHeadModel"],
-        "auto_map": {
-            "AutoConfig": "configuration_gpt2_compressed.GPT2CompressedConfig",
-            "AutoModelForCausalLM": "modeling_gpt2_compressed.GPT2CompressedLMHeadModel",
-        },
-    })
+    # For LLaMA, keep model_type="llama" for HF internal compatibility
+    # For GPT-2, use "gpt2_compressed" to avoid conflicts
+    if arch == "llama":
+        config.update({
+            "model_type": "llama",  # Keep original for RoPE/RMSNorm compatibility
+            "architectures": [arch_class],
+            "auto_map": {
+                "AutoConfig": f"{config_file[:-3]}.{cfg_class}",
+                "AutoModelForCausalLM": f"{model_file[:-3]}.{arch_class}",
+            },
+            "is_compressed": True,
+        })
+    else:
+        config.update({
+            "model_type": f"{arch}_compressed",
+            "architectures": [arch_class],
+            "auto_map": {
+                "AutoConfig": f"{config_file[:-3]}.{cfg_class}",
+                "AutoModelForCausalLM": f"{model_file[:-3]}.{arch_class}",
+            },
+        })
     
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
