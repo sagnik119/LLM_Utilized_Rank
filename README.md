@@ -320,7 +320,7 @@ python scripts/apply_compression.py \
   --mode weight_svd \
   --out ckpts/llama2_7b_weight_svd
 
-# Eval compressed model (no fine tuning)
+# Eval compressed model (no fine tuning) - BOTTLENECK STEP
 python scripts/eval_lm_eval.py \
   --model ckpts/llama2_7b_compressed \
   --tasks wikitext arc_easy hellaswag winogrande piqa \
@@ -332,10 +332,10 @@ python scripts/finetune_compressed.py --preset full \
   --model ckpts/llama2_7b_compressed \
   --data redpajama \
   --out outputs/llama2_7b_compressed_fullft \
-  --max-train-tokens 150000000 \
+  --max-train-tokens 10000000 \
   --lr 2e-5 \
-  --batch-size 1 \
-  --seq-length 2048
+  --batch-size 16 \
+  --seq-length 512
 
 # Evaluate
 python scripts/eval_lm_eval.py \

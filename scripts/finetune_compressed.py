@@ -2,12 +2,17 @@
 """
 Fine-tune a compressed model with factorized layers using PEFT.
 
-This script uses the custom GPT2CompressedLMHeadModel to properly load
-factorized weights, then applies LoRA/Full/Freeze fine-tuning.
+This script supports both GPT-2 and LLaMA compressed models, automatically
+detecting the architecture and applying appropriate fine-tuning strategies.
 
 Usage:
+    # GPT-2
     python scripts/finetune_compressed.py --preset lora \
         --model ckpts/gpt2_compressed --data alpaca_en --out outputs/lora_run
+    
+    # LLaMA-2
+    python scripts/finetune_compressed.py --preset lora \
+        --model ckpts/llama2_compressed --data alpaca_en --out outputs/lora_run
 """
 
 import argparse
@@ -15,7 +20,7 @@ import os
 import sys
 import shutil
 import torch
-from transformers import AutoTokenizer, TrainingArguments, Trainer, DataCollatorForLanguageModeling
+from transformers import AutoTokenizer, AutoConfig, TrainingArguments, Trainer, DataCollatorForLanguageModeling, DataCollatorForSeq2Seq
 from datasets import load_dataset
 from peft import get_peft_model, LoraConfig, TaskType
 
@@ -23,6 +28,38 @@ from peft import get_peft_model, LoraConfig, TaskType
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
+from src.urank.modeling_llama_compressed import LlamaCompressedForCausalLM
+
+
+def detect_architecture(model_path):
+    """
+    Detect model architecture from config.
+    
+    Returns:
+        str: 'gpt2' or 'llama'
+    """
+    try:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        model_type = config.model_type.lower()
+        
+        if model_type.startswith("gpt2"):
+            return "gpt2"
+        elif model_type.startswith("llama") or model_type == "llama":
+            return "llama"
+        else:
+            raise ValueError(f"Unsupported model_type: {model_type}")
+    except Exception as e:
+        raise ValueError(f"Failed to detect architecture: {e}")
+
+
+def load_compressed_model(model_path, architecture):
+    """Load the appropriate compressed model class based on architecture."""
+    if architecture == "gpt2":
+        return GPT2CompressedLMHeadModel.from_pretrained(model_path)
+    elif architecture == "llama":
+        return LlamaCompressedForCausalLM.from_pretrained(model_path)
+    else:
+        raise ValueError(f"Unsupported architecture: {architecture}")
 
 
 def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train", max_length: int = 512):
@@ -80,14 +117,24 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train", m
     return tokenized
 
 
-def find_factorized_submodules(model):
+def find_factorized_submodules(model, architecture):
     """
     Find all A and B submodules inside FactorizedLinear layers.
+    
+    Args:
+        model: The compressed model
+        architecture: 'gpt2' or 'llama'
     
     Returns:
         List of module name patterns that PEFT can match
     """
-    from src.urank.modeling_gpt2_compressed import FactorizedLinear
+    # Import the appropriate FactorizedLinear class
+    if architecture == "gpt2":
+        from src.urank.modeling_gpt2_compressed import FactorizedLinear
+    elif architecture == "llama":
+        from src.urank.modeling_llama_compressed import FactorizedLinear
+    else:
+        raise ValueError(f"Unsupported architecture: {architecture}")
     
     factorized_targets = []
     for name, module in model.named_modules():
@@ -118,17 +165,26 @@ def main():
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     args = parser.parse_args()
     
+    # Detect architecture
+    print(f"Detecting architecture for: {args.model}")
+    architecture = detect_architecture(args.model)
+    print(f"  Detected: {architecture}")
+    
     print(f"Loading compressed model from: {args.model}")
     
-    # Load model with custom class
-    model = GPT2CompressedLMHeadModel.from_pretrained(args.model)
+    # Load model with appropriate class
+    model = load_compressed_model(args.model, architecture)
     model = model.to("cuda" if torch.cuda.is_available() else "cpu")  # PATCH 1: Move to CUDA immediately
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
-    # Set pad token
+    # Set pad token and padding side (LLaMA-specific)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.eos_token_id
+    
+    # For LLaMA, set padding side to right for causal masking
+    if architecture == "llama":
+        tokenizer.padding_side = "right"
     
     print(f"Model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
@@ -137,11 +193,13 @@ def main():
         print(f"\nApplying LoRA (r={args.lora_r}, alpha={args.lora_alpha})")
         
         # Find all FactorizedLinear A and B submodules
-        target_modules = find_factorized_submodules(model)
+        target_modules = find_factorized_submodules(model, architecture)
         
         if not target_modules:
-            print("WARNING: No FactorizedLinear modules found. Falling back to standard patterns.")
-            target_modules = ["c_attn", "c_proj", "c_fc"]
+            raise RuntimeError(
+                "No FactorizedLinear modules found. Compression was not applied correctly. "
+                "Make sure you're using a properly compressed checkpoint."
+            )
         else:
             print(f"Found {len(target_modules)} FactorizedLinear submodules (A and B) for LoRA:")
             for i, name in enumerate(target_modules[:10]):  # Show first 10
@@ -221,11 +279,21 @@ def main():
         report_to="none",
     )
     
-    # Data collator
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False
-    )
+    # Data collator (architecture-specific)
+    if architecture == "llama":
+        # LLaMA requires proper attention masking
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer=tokenizer,
+            model=model,
+            padding=True,
+            pad_to_multiple_of=8
+        )
+    else:
+        # GPT-2 standard collator
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False
+        )
     
     # Trainer
     trainer = Trainer(
@@ -249,11 +317,22 @@ def main():
     
     # Copy custom architecture files to make the checkpoint self-contained
     print("\nCopying custom architecture files...")
-    architecture_files = [
-        "configuration_gpt2_compressed.py",
-        "modeling_gpt2_compressed.py",
-        "__init__.py"
-    ]
+    
+    # Determine which files to copy based on architecture
+    if architecture == "gpt2":
+        architecture_files = [
+            "configuration_gpt2_compressed.py",
+            "modeling_gpt2_compressed.py",
+            "__init__.py"
+        ]
+    elif architecture == "llama":
+        architecture_files = [
+            "configuration_llama_compressed.py",
+            "modeling_llama_compressed.py",
+            "__init__.py"
+        ]
+    else:
+        architecture_files = []
     
     for fname in architecture_files:
         src_path = os.path.join(args.model, fname)
