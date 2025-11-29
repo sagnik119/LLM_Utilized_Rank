@@ -22,13 +22,13 @@ import shutil
 import torch
 from transformers import AutoTokenizer, AutoConfig, TrainingArguments, Trainer, DataCollatorForLanguageModeling, DataCollatorForSeq2Seq
 from datasets import load_dataset
-from peft import get_peft_model, LoraConfig, TaskType
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.urank.modeling_gpt2_compressed import GPT2CompressedLMHeadModel
 from src.urank.modeling_llama_compressed import LlamaCompressedForCausalLM
+from src.urank.lora_factorized import convert_to_lora_factorized, count_lora_parameters
 
 
 def detect_architecture(model_path):
@@ -117,33 +117,7 @@ def load_dataset_from_name(dataset_name: str, tokenizer, split: str = "train", m
     return tokenized
 
 
-def find_factorized_submodules(model, architecture):
-    """
-    Find all A and B submodules inside FactorizedLinear layers.
-    
-    Args:
-        model: The compressed model
-        architecture: 'gpt2' or 'llama'
-    
-    Returns:
-        List of module name patterns that PEFT can match
-    """
-    # Import the appropriate FactorizedLinear class
-    if architecture == "gpt2":
-        from src.urank.modeling_gpt2_compressed import FactorizedLinear
-    elif architecture == "llama":
-        from src.urank.modeling_llama_compressed import FactorizedLinear
-    else:
-        raise ValueError(f"Unsupported architecture: {architecture}")
-    
-    factorized_targets = []
-    for name, module in model.named_modules():
-        if isinstance(module, FactorizedLinear):
-            # Add both A and B submodules of this FactorizedLinear
-            factorized_targets.append(f"{name}.A")
-            factorized_targets.append(f"{name}.B")
-    
-    return factorized_targets
+# Removed find_factorized_submodules - no longer needed with custom LoRA
 
 
 def main():
@@ -163,6 +137,8 @@ def main():
     parser.add_argument("--lora-r", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--use-bf16", action="store_true", default=True,
+                        help="Use BF16 for training (default: True for A100/H100)")
     args = parser.parse_args()
     
     # Detect architecture
@@ -188,36 +164,36 @@ def main():
     
     print(f"Model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
-    # Apply PEFT based on preset
+    # Apply fine-tuning based on preset
     if args.preset == "lora":
-        print(f"\nApplying LoRA (r={args.lora_r}, alpha={args.lora_alpha})")
+        print(f"\nApplying Custom LoRA to FactorizedLinear (r={args.lora_r}, alpha={args.lora_alpha})")
         
-        # Find all FactorizedLinear A and B submodules
-        target_modules = find_factorized_submodules(model, architecture)
+        # Convert all FactorizedLinear modules to LoRAFactorizedLinear
+        num_converted = convert_to_lora_factorized(
+            model,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            freeze_base=True
+        )
         
-        if not target_modules:
+        if num_converted == 0:
             raise RuntimeError(
                 "No FactorizedLinear modules found. Compression was not applied correctly. "
                 "Make sure you're using a properly compressed checkpoint."
             )
-        else:
-            print(f"Found {len(target_modules)} FactorizedLinear submodules (A and B) for LoRA:")
-            for i, name in enumerate(target_modules[:10]):  # Show first 10
-                print(f"  [{i+1}] {name}")
-            if len(target_modules) > 10:
-                print(f"  ... and {len(target_modules) - 10} more")
         
-        peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            target_modules=target_modules,  # Now contains explicit paths like "transformer.h.0.attn.c_attn.A"
-            bias="none"
-        )
-        model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
-        model.train()  # PATCH 4: Explicitly set to training mode
+        print(f"\n✓ Converted {num_converted} FactorizedLinear modules to LoRAFactorizedLinear")
+        
+        # Print parameter counts
+        param_counts = count_lora_parameters(model)
+        print(f"\nParameter counts:")
+        print(f"  Base (frozen):     {param_counts['base']:,}")
+        print(f"  LoRA (trainable):  {param_counts['lora']:,}")
+        print(f"  Total:             {param_counts['total']:,}")
+        print(f"  Trainable ratio:   {param_counts['lora']/param_counts['total']*100:.2f}%")
+        
+        model.train()
     
     elif args.preset == "full":
         print("\nFull fine-tuning (all parameters trainable)")
@@ -273,9 +249,9 @@ def main():
         logging_steps=20,
         save_steps=1000,
         save_total_limit=2,
-        bf16=False,                    # PATCH 3: Disable for stability
-        fp16=False,                    # PATCH 3: Disable for stability
-        gradient_checkpointing=False,  # PATCH 2: Disable to fix gradient flow
+        bf16=args.use_bf16,  # Use BF16 for A100/H100 GPUs
+        fp16=False,
+        gradient_checkpointing=False,
         report_to="none",
     )
     

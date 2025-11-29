@@ -328,14 +328,17 @@ python scripts/eval_lm_eval.py \
   --out results_llama2_7b_compressed_utilized.json
 
 # Fine tune
-python scripts/finetune_compressed.py --preset full \
+python scripts/finetune_compressed.py --preset lora \
   --model ckpts/llama2_7b_compressed \
   --data redpajama \
-  --out outputs/llama2_7b_compressed_fullft \
+  --out outputs/llama2_7b_compressed_loraft \
   --max-train-tokens 10000000 \
   --lr 2e-5 \
-  --batch-size 16 \
-  --seq-length 512
+  --batch-size 2 \
+  --seq-length 512 \
+  --lora-r 64 \
+  --lora-alpha 16 \
+  --lora-dropout 0.05
 
 # Evaluate
 python scripts/eval_lm_eval.py \
