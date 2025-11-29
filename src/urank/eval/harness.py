@@ -125,7 +125,7 @@ def run_lm_eval(
             "pretrained": model_name_or_path,
             "batch_size": batch_size,
             "device": device,
-            "device_map": "auto"
+            "device_map": "auto",
             "trust_remote_code": trust_remote_code,
         }
         
