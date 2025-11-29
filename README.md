@@ -320,6 +320,13 @@ python scripts/apply_compression.py \
   --mode weight_svd \
   --out ckpts/llama2_7b_weight_svd
 
+# Eval compressed model (no fine tuning)
+python scripts/eval_lm_eval.py \
+  --model ckpts/llama2_7b_compressed \
+  --tasks wikitext arc_easy hellaswag winogrande piqa \
+  --batch 4 --trust-remote-code \
+  --out results_llama2_7b_compressed_utilized.json
+
 # Fine tune
 python scripts/finetune_compressed.py --preset full \
   --model ckpts/llama2_7b_compressed \

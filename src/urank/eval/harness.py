@@ -63,6 +63,7 @@ def run_lm_eval(
     trust_remote_code: bool = True,
     output_path: Optional[str] = None,
     tokenizer = None,
+    dtype: str = "float16",
 ) -> Dict:
     """
     Run lm-evaluation-harness on specified tasks.
@@ -76,6 +77,7 @@ def run_lm_eval(
         trust_remote_code: Whether to trust remote code for custom models
         output_path: Optional path to save results JSON
         tokenizer: Optional pre-loaded tokenizer (for compressed models)
+        dtype: Model dtype (default: "float16" for speed)
         
     Returns:
         Dictionary containing evaluation results with structure:
@@ -123,12 +125,21 @@ def run_lm_eval(
             "pretrained": model_name_or_path,
             "batch_size": batch_size,
             "device": device,
+            "device_map": "auto"
             "trust_remote_code": trust_remote_code,
         }
         
         # Pass tokenizer if provided (important for compressed models)
         if tokenizer is not None:
             hflm_kwargs["tokenizer"] = tokenizer
+        
+        # Set dtype for faster evaluation
+        if dtype == "float16":
+            hflm_kwargs["dtype"] = "float16"
+        elif dtype == "bfloat16":
+            hflm_kwargs["dtype"] = "bfloat16"
+        elif dtype == "float32":
+            hflm_kwargs["dtype"] = "float32"
         
         model = HFLM(**hflm_kwargs)
     except Exception as e:

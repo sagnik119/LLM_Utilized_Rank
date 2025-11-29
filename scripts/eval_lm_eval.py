@@ -55,6 +55,13 @@ def main():
         default=False,
         help="Force trust_remote_code=True (recommended for compressed models)"
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float16",
+        choices=["float16", "bfloat16", "float32"],
+        help="Model dtype for evaluation (default: float16 for speed)"
+    )
     args = parser.parse_args()
     
     model_path = args.model
@@ -79,6 +86,8 @@ def main():
         trust_remote_code=trust_rc
     )
     
+    print(f"Using dtype: {args.dtype}")
+    
     # Run evaluation
     results = run_lm_eval(
         model_name_or_path=model_path,
@@ -88,6 +97,7 @@ def main():
         limit=args.limit,
         device=args.device,
         trust_remote_code=trust_rc,
+        dtype=args.dtype,
         output_path=args.out,
     )
     
