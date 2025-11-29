@@ -255,21 +255,11 @@ def main():
         report_to="none",
     )
     
-    # Data collator (architecture-specific)
-    if architecture == "llama":
-        # LLaMA requires proper attention masking
-        data_collator = DataCollatorForSeq2Seq(
-            tokenizer=tokenizer,
-            model=model,
-            padding=True,
-            pad_to_multiple_of=8
-        )
-    else:
-        # GPT-2 standard collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer,
-            mlm=False
-        )
+    # Data collator - use standard language modeling collator for both architectures
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
+    )
     
     # Trainer
     trainer = Trainer(
