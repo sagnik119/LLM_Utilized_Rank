@@ -287,6 +287,7 @@ python scripts/collect_output_activations.py \
   --out stats/llama2_7b_yty.pt
 
 python scripts/search_ranks_energy.py \
+  --model meta-llama/Llama-2-7b-hf \
   --stats stats/llama2_7b_yty.pt \
   --energy 0.99 \
   --out ranks/llama2_7b_energy.json

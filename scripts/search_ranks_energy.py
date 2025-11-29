@@ -20,6 +20,7 @@ import argparse
 import json
 import torch
 from pathlib import Path
+from transformers import AutoModelForCausalLM
 
 
 def compute_rank_from_energy(C, energy=0.99):
@@ -68,20 +69,26 @@ def main():
         description="Compute utilized ranks from output activation energy"
     )
     parser.add_argument(
-        "--stats", 
-        type=str, 
+        "--stats",
+        type=str,
         required=True,
         help="Path to Y^T Y statistics file (.pt)"
     )
     parser.add_argument(
-        "--energy", 
-        type=float, 
+        "--model",
+        type=str,
+        required=True,
+        help="Model name or path (needed to extract weight shapes)"
+    )
+    parser.add_argument(
+        "--energy",
+        type=float,
         default=0.99,
         help="Target energy fraction (default: 0.99 = 99%%)"
     )
     parser.add_argument(
-        "--out", 
-        type=str, 
+        "--out",
+        type=str,
         required=True,
         help="Output JSON file path"
     )
@@ -105,6 +112,16 @@ def main():
     yty_map = torch.load(args.stats, map_location="cpu")
     print(f"  Loaded statistics for {len(yty_map)} layers\n")
     
+    # Load model to extract weight shapes (need d_in for correct compression ratio)
+    print(f"Loading model to extract weight shapes: {args.model}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype=torch.float32,
+        device_map="cpu",
+        low_cpu_mem_usage=True
+    )
+    print(f"  Model loaded\n")
+    
     # Compute ranks for each layer
     results = {}
     total_params_original = 0
@@ -119,20 +136,47 @@ def main():
         
         r, eigvals, cum = compute_rank_from_energy(C, args.energy)
         
+        # Get weight shape from model to compute correct compression ratio
+        try:
+            module = dict(model.named_modules())[name]
+        except KeyError:
+            print(f"Warning: Layer {name} not found in model, skipping")
+            continue
+        
+        if hasattr(module, "weight"):
+            W = module.weight.data
+            if W.ndim == 2:
+                d_out_model, d_in_model = W.shape
+            elif W.ndim == 1:
+                # Edge case: 1D weight (shouldn't happen for Linear)
+                d_out_model, d_in_model = C.shape[0], 1
+            else:
+                raise ValueError(f"Unexpected weight shape for {name}: {W.shape}")
+        else:
+            raise ValueError(f"No weight found for module {name}")
+        
         d_out = C.shape[0]
+        d_in = d_in_model
+        effective_dim = min(d_out, d_in)
+        
         achieved_energy = float(cum[r-1].item()) if r > 0 else 0.0
         
-        # Store results
+        # Store results with correct compression ratio
         results[name] = {
             "r": int(r),
             "d_out": int(d_out),
+            "d_in": int(d_in),
             "energy": achieved_energy,
-            "compression_ratio": float(r / d_out) if d_out > 0 else 1.0
+            "compression_ratio": float(r / effective_dim) if effective_dim > 0 else 1.0
         }
+        
+        # Update parameter counts for summary
+        total_params_original += d_out * d_in
+        total_params_compressed += r * (d_out + d_in)
         
         # Print summary
         print(f"{name}")
-        print(f"  d_out: {d_out}, r: {r} ({r/d_out*100:.1f}%), energy: {achieved_energy:.4f}")
+        print(f"  d_out: {d_out}, d_in: {d_in}, r: {r} ({r/effective_dim*100:.1f}%), energy: {achieved_energy:.4f}")
         
         if args.verbose:
             # Print top eigenvalues
@@ -153,6 +197,9 @@ def main():
     print(f"  Average rank: {sum(ranks)/len(ranks):.1f}")
     print(f"  Average compression ratio: {sum(compression_ratios)/len(compression_ratios):.3f}")
     print(f"  Output dimension range: [{min(d_outs)}, {max(d_outs)}]")
+    print(f"  Total original params: {total_params_original:,}")
+    print(f"  Total compressed params: {total_params_compressed:,}")
+    print(f"  Overall compression: {total_params_compressed/total_params_original*100:.1f}%")
     
     # Save results
     output_path = Path(args.out)
