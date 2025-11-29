@@ -6,8 +6,48 @@ This module provides utilities for:
 - Replacing Linear layers with factored low-rank versions
 """
 
-from typing import Iterator, Tuple
+from typing import Iterator, Tuple, List
 import torch.nn as nn
+
+
+# Architecture-specific layer patterns
+GPT2_PATTERNS = [
+    "attn.c_attn", "attn.c_proj", "mlp.c_fc", "mlp.c_proj"
+]
+
+LLAMA_PATTERNS = [
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+]
+
+
+def get_architecture_patterns(model: nn.Module) -> List[str]:
+    """
+    Get layer name patterns for a model's architecture.
+    
+    Args:
+        model: PyTorch model
+        
+    Returns:
+        List of layer name patterns to match
+        
+    Raises:
+        ValueError: If architecture is not recognized
+    """
+    cls_name = model.__class__.__name__.lower()
+    
+    if "gpt2" in cls_name or "gpt-2" in cls_name:
+        return GPT2_PATTERNS
+    elif "llama" in cls_name:
+        return LLAMA_PATTERNS
+    else:
+        # Default: return all linear layers
+        return []
 
 
 def iter_linear_layers(model: nn.Module) -> Iterator[Tuple[str, nn.Linear]]:
@@ -30,6 +70,35 @@ def iter_linear_layers(model: nn.Module) -> Iterator[Tuple[str, nn.Linear]]:
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
             yield name, module
+
+
+def iter_candidate_linear_modules(model: nn.Module) -> Iterator[Tuple[str, nn.Linear]]:
+    """
+    Iterate through candidate Linear layers for compression (architecture-aware).
+    
+    Only yields layers matching architecture-specific patterns (attention, MLP).
+    
+    Args:
+        model: PyTorch model
+        
+    Yields:
+        Tuple of (layer_name, linear_module) for candidate layers
+        
+    Example:
+        >>> for name, layer in iter_candidate_linear_modules(model):
+        ...     print(f"Candidate: {name}")
+    """
+    patterns = get_architecture_patterns(model)
+    
+    if not patterns:
+        # No patterns defined, yield all linear layers
+        for name, module in iter_linear_layers(model):
+            yield name, module
+    else:
+        # Filter by architecture patterns
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear) and any(p in name for p in patterns):
+                yield name, module
 
 
 def replace_linear(parent: nn.Module, attr: str, left: nn.Linear, right: nn.Linear):

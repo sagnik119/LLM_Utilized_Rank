@@ -46,28 +46,23 @@ def compute_weight_svd_ranks(
     Returns:
         dict: {layer_name: {"r": rank, "d_out": m, "d_in": d, "energy": float}}
     """
-    ranks = {}
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from src.urank.instrumentation import iter_candidate_linear_modules
     
-    # Default: compress attention and MLP layers
-    def should_include(name):
-        if layer_patterns is not None:
-            return any(pattern in name for pattern in layer_patterns)
-        # Default patterns for GPT-2 style models
-        return any(x in name for x in ["attn.c_attn", "attn.c_proj", "mlp.c_fc", "mlp.c_proj"])
+    ranks = {}
     
     print(f"Computing weight SVD ranks (target energy: {target_energy*100:.4f}%)...")
     print("-" * 80)
     
     with torch.no_grad():
-        for name, module in model.named_modules():
-            # Check if this is a Linear or Conv1D layer we want to compress
-            is_linear = isinstance(module, nn.Linear)
+        for name, module in iter_candidate_linear_modules(model):
+            # Check Conv1D type
             is_conv1d = HAS_CONV1D and isinstance(module, Conv1D)
             
-            if not (is_linear or is_conv1d):
-                continue
-            
-            if not should_include(name):
+            # Optional manual filtering if layer_patterns provided
+            if layer_patterns is not None and not any(pattern in name for pattern in layer_patterns):
                 continue
             
             # Extract weight matrix as (d_out, d_in)

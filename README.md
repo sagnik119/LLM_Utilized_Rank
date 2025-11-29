@@ -30,7 +30,7 @@ pip install -e .
 pip install -r requirements.txt
 ```
 
-## Complete Pipeline
+## Complete Pipeline for GPT2 Small (Small model)
 
 This repository provides a comprehensive pipeline for utilized rank analysis and compression. Follow these steps in order:
 
@@ -38,6 +38,7 @@ This repository provides a comprehensive pipeline for utilized rank analysis and
 
 Collect X^T X statistics from forward passes on a calibration dataset:
 
+*OPTION 1: Collect input stats (legacy)
 ```bash
 python scripts/collect_activations.py \
   --model gpt2 \
@@ -48,10 +49,20 @@ python scripts/collect_activations.py \
   --save stats/gpt2_xtx.pt
 ```
 
+*OPTION 2: Collect output stats (current)
+python scripts/collect_output_activations.py \
+  --model gpt2 \
+  --dataset wikitext \
+  --split train \
+  --samples 1000000 \
+  --max-length 512 \
+  --out stats/gpt2_yty.pt
+
 ### Step 2: Search Optimal Ranks
 
 Binary search for optimal ranks with validation constraint (ε=0.1%):
 
+*OPTION 1: search rank based on drop of PPL (legacy)
 ```bash
 python scripts/search_ranks.py \
   --model gpt2 \
@@ -61,6 +72,19 @@ python scripts/search_ranks.py \
   --val-samples 2000 \
   --out ranks/gpt2_base.json
 ```
+
+*OPTION 2: compute energy based ranks
+python scripts/search_ranks_energy.py \
+  --stats stats/gpt2_yty.pt \
+  --energy 0.99 \
+  --out ranks/gpt2_energy.json
+
+*OPTION 3: naive SVD based rank collection
+python scripts/search_ranks_weight_svd.py \
+  --model gpt2 \
+  --energy 0.9495 \
+  --out ranks/gpt2_weight_svd.json
+
 
 ### Step 3: Apply Rank Allocation Policy (Optional)
 
@@ -89,8 +113,8 @@ Transform weights and factorize where beneficial:
 ```bash
 python scripts/apply_compression.py \
   --model gpt2 \
-  --ranks ranks/gpt2_qkv.json \
-  --stats stats/gpt2_xtx.pt \
+  --ranks ranks/gpt2_energy.json \
+  --stats stats/gpt2_yty.pt \
   --out ckpts/gpt2_compressed
 ```
 
@@ -104,7 +128,31 @@ python scripts/apply_compression.py \
   --out ckpts/gpt2_compressed
 ``` -->
 
-### TODO: Include an eval step here after compression and before fine tuning
+*OPTION 2: Naive SVD rank based compression
+
+python scripts/apply_compression.py \
+  --model gpt2 \
+  --ranks ranks/gpt2_weight_svd.json \
+  --mode weight_svd \
+  --out ckpts/gpt2_weight_svd
+
+*OPTION 3: hybrid, identify layers to be compressed as per utilized rank, but compress them using naive SVD
+
+python scripts/apply_compression.py \
+  --model gpt2 \
+  --ranks ranks/gpt2_energy.json \
+  --stats stats/gpt2_yty.pt \
+  --mode hybrid \
+  --out ckpts/gpt2_hybrid
+
+
+### Step 4: Eval compressed model (pre-fine tuning)
+
+python scripts/eval_lm_eval.py \
+  --model ckpts/gpt2_compressed \
+  --tasks wikitext arc_easy hellaswag winogrande piqa \
+  --batch 8 \
+  --out results.json
 
 ### Step 4: Merge new datasets information
 python scripts/setup_llamafactory_datasets.py   --data-dir /scratch/users/sagnikb/LLaMA-Factory/data   --merge
@@ -115,7 +163,7 @@ Recover performance using one of three strategies:
 
 **Option A: LoRA Fine-Tuning (Recommended)**
 
-# use this option for finetuning uncompressed models
+# use this option for finetuning original models
 ```bash
 python scripts/finetune_llamafactory.py \
   --preset lora \
@@ -131,7 +179,7 @@ python scripts/finetune_llamafactory.py \
 python scripts/finetune_compressed.py \
   --preset lora \
   --model ckpts/gpt2_compressed \
-  --data alpaca_en \
+  --data tatsu-lab/alpaca \
   --out outputs/gpt2_lora \
   --epochs 2 \
   --lr 2e-4 \
@@ -172,25 +220,96 @@ python scripts/finetune.py \
   --out ckpts/gpt2_finetuned
 ```
 
+python scripts/finetune_compressed.py --preset full \
+  --model ckpts/gpt2_compressed \
+  --data redpajama \
+  --out outputs/gpt2_redpajama_fullft_50m_toks \
+  --max-train-tokens 50000000 \
+  --lr 2e-5 \
+  --batch-size 4
+
+
+### Step 5: Export compressed model for compatibility with lm eval harness
+
+**Option A: Export base compressed model only
+python scripts/export_compressed_model.py \
+  --model ckpts/gpt2_compressed \
+  --out exports/gpt2_compressed_eval
+
+**Option B: Export compressed model + LoRa adapters
+python scripts/export_compressed_model.py \
+  --model ckpts/gpt2_compressed \
+  --lora outputs/gpt2_lora \
+  --out exports/gpt2_lora_merged
+
+
 ### Step 6: Evaluate
 
 **Option A: Comprehensive Evaluation (lm-eval-harness)**
 ```bash
 python scripts/eval_lm_eval.py \
-  --model outputs/gpt2_lora \
+  --model exports/gpt2_lora_merged \
   --tasks wikitext arc_easy hellaswag winogrande piqa \
   --batch 8 \
-  --out eval_results.json
+  --out results.json
 ```
 
 **Option B: Perplexity Only**
 ```bash
 python scripts/eval_perplexity.py \
-  --model outputs/gpt2_lora \
+  --model exports/gpt2_lora_merged \
   --dataset wikitext \
   --split test \
   --samples 5000
 ```
+1. Evaluate baseline GPT-2
+python scripts/eval_lm_eval.py --model gpt2 --tasks wikitext arc_easy \
+  --out results_baseline.json
+
+2. Evaluate compressed model (before fine-tuning)
+python scripts/eval_lm_eval.py --model ckpts/gpt2_compressed --tasks wikitext arc_easy \
+  --out results_compressed.json
+
+3. Evaluate LoRA fine-tuned compressed model
+python scripts/eval_lm_eval.py --model exports/gpt2_lora_merged --tasks wikitext arc_easy \
+  --out results_finetuned.json
+
+### Complete pipeline for Llama-3-8B (medium sized model)
+
+# 1. Collect activations (now architecture-aware!)
+python scripts/collect_output_activations.py \
+  --model meta-llama/Meta-Llama-3-8B \
+  --dataset wikitext \
+  --samples 500000 \
+  --out stats/llama3_8b_yty.pt
+
+# 2. Search ranks (unchanged, works on any Y^T Y file)
+python scripts/search_ranks_energy.py \
+  --stats stats/llama3_8b_yty.pt \
+  --energy 0.99 \
+  --out ranks/llama3_8b_energy.json
+
+# 3. Apply compression (unchanged, name-based lookup)
+python scripts/apply_compression.py \
+  --model meta-llama/Meta-Llama-3-8B \
+  --ranks ranks/llama3_8b_energy.json \
+  --stats stats/llama3_8b_yty.pt \
+  --mode utilized \
+  --out ckpts/llama3_8b_compressed
+
+# 4. Fine-tune (unchanged, HF-based)
+python scripts/finetune_compressed.py --preset full \
+  --model ckpts/llama3_8b_compressed \
+  --data redpajama \
+  --max-train-tokens 150000000 \
+  --out outputs/llama3_8b_fullft
+
+# 5. Evaluate (unchanged, lm-eval-harness)
+python scripts/eval_lm_eval.py \
+  --model outputs/llama3_8b_fullft \
+  --tasks wikitext arc_easy hellaswag \
+  --out results_llama3.json
+
 
 ## Quick Examples
 

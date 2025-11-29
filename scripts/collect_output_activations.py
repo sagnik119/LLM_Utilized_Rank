@@ -15,11 +15,17 @@ Usage:
 """
 
 import argparse
+import os
+import sys
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from collections import defaultdict
 from tqdm import tqdm
+
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from src.urank.instrumentation import iter_candidate_linear_modules
 
 
 @torch.no_grad()
@@ -73,35 +79,17 @@ def main():
         else:
             yty[name] += C.cpu()
 
-    # Register hooks for all relevant layers
+    # Register hooks for all candidate layers (architecture-aware)
     hooks = []
 
-    for name, module in model.named_modules():
-        # MLP projections
-        if name.endswith(".mlp.c_fc") or name.endswith(".mlp.c_proj"):
-            def make_hook(name_):
-                def hook(_, __, output):
-                    add_cov(name_, output)
-                return hook
-            hooks.append(module.register_forward_hook(make_hook(name)))
+    for name, module in iter_candidate_linear_modules(model):
+        def make_hook(name_):
+            def hook(_, __, output):
+                add_cov(name_, output)
+            return hook
+        hooks.append(module.register_forward_hook(make_hook(name)))
 
-        # Attention combined QKV projection (treat as single layer)
-        if name.endswith(".attn.c_attn"):
-            def make_hook(name_):
-                def hook(_, __, output):
-                    add_cov(name_, output)
-                return hook
-            hooks.append(module.register_forward_hook(make_hook(name)))
-
-        # Attention output projection
-        if name.endswith(".attn.c_proj"):
-            def make_hook(name_):
-                def hook(_, __, output):
-                    add_cov(name_, output)
-                return hook
-            hooks.append(module.register_forward_hook(make_hook(name)))
-
-    print(f"Registered hooks on {len(hooks)} layers")
+    print(f"Registered hooks on {len(hooks)} layers (architecture: {model.__class__.__name__})")
 
     # Load dataset
     print(f"Loading dataset: {args.dataset} ({args.config}) - {args.split}")
