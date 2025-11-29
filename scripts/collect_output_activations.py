@@ -57,8 +57,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
     # Compile model for speedup
-    print("Compiling model for faster inference...")
-    model = torch.compile(model)
+    # print("Compiling model for faster inference...")
+    # model = torch.compile(model)
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -137,8 +137,8 @@ def main():
             
             # Clear batch and free memory
             batch_texts = []
-            if device == "cuda":
-                torch.cuda.empty_cache()
+            # if device == "cuda":
+            #     torch.cuda.empty_cache()
     
     # Process remaining texts in incomplete batch
     if batch_texts and total_tokens < args.samples:
