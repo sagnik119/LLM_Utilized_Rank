@@ -1,19 +1,39 @@
 #!/usr/bin/env python3
 """
 Evaluate a model using lm-evaluation-harness.
+Fully compatible with compressed GPT-2 and LLaMA models.
 
 This script provides a CLI for running comprehensive evaluations using
 the EleutherAI lm-eval-harness, including perplexity and zero/few-shot tasks.
 
 Usage:
-    python scripts/eval_lm_eval.py --model ckpts/gpt2_compressed \
+    python scripts/eval_lm_eval.py --model ckpts/llama2_compressed \
         --tasks wikitext arc_easy hellaswag winogrande piqa \
-        --batch 8 --out eval_results.json
+        --batch 4 --trust-remote-code --out eval_results.json
 """
 
 import argparse
 import json
+from transformers import AutoTokenizer, AutoConfig
 from urank.eval.harness import run_lm_eval, extract_metrics
+
+
+def must_trust_remote_code(model_path):
+    """
+    Detect whether the model requires trust_remote_code=True.
+    This is true for any compressed checkpoint.
+    
+    Args:
+        model_path: Path to model checkpoint
+        
+    Returns:
+        bool: True if model requires trust_remote_code
+    """
+    try:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        return getattr(config, "is_compressed", False)
+    except Exception:
+        return False
 
 
 def main():
@@ -32,23 +52,42 @@ def main():
     parser.add_argument(
         "--trust-remote-code",
         action="store_true",
-        default=True,
-        help="Trust remote code (default: True for compressed models)"
+        default=False,
+        help="Force trust_remote_code=True (recommended for compressed models)"
     )
     args = parser.parse_args()
     
-    print(f"Evaluating model: {args.model}")
+    model_path = args.model
+    
+    # Detect compressed model and automatically enable trust_remote_code
+    auto_trust = must_trust_remote_code(model_path)
+    trust_rc = args.trust_remote_code or auto_trust
+    
+    if trust_rc:
+        print("✓ Using trust_remote_code=True (compressed model detected)")
+    else:
+        print("ℹ Using trust_remote_code=False")
+    
+    print(f"Evaluating model: {model_path}")
     print(f"Tasks: {', '.join(args.tasks)}")
     print(f"Batch size: {args.batch}")
     
+    # Load tokenizer explicitly (important for custom architectures)
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=trust_rc
+    )
+    
     # Run evaluation
     results = run_lm_eval(
-        model_name_or_path=args.model,
+        model_name_or_path=model_path,
+        tokenizer=tokenizer,
         tasks=args.tasks,
         batch_size=args.batch,
         limit=args.limit,
         device=args.device,
-        trust_remote_code=args.trust_remote_code,
+        trust_remote_code=trust_rc,
         output_path=args.out,
     )
     

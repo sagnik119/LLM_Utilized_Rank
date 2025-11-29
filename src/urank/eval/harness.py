@@ -62,6 +62,7 @@ def run_lm_eval(
     device: Optional[str] = None,
     trust_remote_code: bool = True,
     output_path: Optional[str] = None,
+    tokenizer = None,
 ) -> Dict:
     """
     Run lm-evaluation-harness on specified tasks.
@@ -74,6 +75,7 @@ def run_lm_eval(
         device: Device to use (default: auto-detect)
         trust_remote_code: Whether to trust remote code for custom models
         output_path: Optional path to save results JSON
+        tokenizer: Optional pre-loaded tokenizer (for compressed models)
         
     Returns:
         Dictionary containing evaluation results with structure:
@@ -116,12 +118,19 @@ def run_lm_eval(
 
     # Create model wrapper
     try:
-        model = HFLM(
-            pretrained=model_name_or_path,
-            batch_size=batch_size,
-            device=device,
-            trust_remote_code=trust_remote_code,
-        )
+        # Build kwargs for HFLM
+        hflm_kwargs = {
+            "pretrained": model_name_or_path,
+            "batch_size": batch_size,
+            "device": device,
+            "trust_remote_code": trust_remote_code,
+        }
+        
+        # Pass tokenizer if provided (important for compressed models)
+        if tokenizer is not None:
+            hflm_kwargs["tokenizer"] = tokenizer
+        
+        model = HFLM(**hflm_kwargs)
     except Exception as e:
         raise RuntimeError(
             f"Failed to load model {model_name_or_path}: {e}"
