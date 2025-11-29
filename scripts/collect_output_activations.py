@@ -56,6 +56,10 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
+    # Compile model for speedup
+    print("Compiling model for faster inference...")
+    model = torch.compile(model)
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -64,36 +68,33 @@ def main():
 
     def add_cov(name, y):
         """
-        Accumulate Y^T Y for output activations.
+        Accumulate Y^T Y for output activations on GPU.
         
         Args:
             name: Layer name
             y: Output tensor (B, T, D) or (B*T, D)
         """
         if y.dim() == 3:
-            B, T, D = y.shape
-            y_flat = y.reshape(-1, D)  # (B*T, D)
+            y_flat = y.reshape(-1, y.size(-1))  # (B*T, D)
         elif y.dim() == 2:
             y_flat = y
-            D = y.shape[1]
         else:
             return  # Skip unexpected shapes
         
-        C = y_flat.T @ y_flat  # (D, D)
+        C = y_flat.T @ y_flat  # (D, D) - keep on GPU
         
         if yty[name] is None:
-            yty[name] = C.cpu()
+            yty[name] = C
         else:
-            yty[name] += C.cpu()
+            yty[name] += C
 
     # Register hooks for all candidate layers (architecture-aware)
+    # FIX: Use default argument to capture name correctly
     hooks = []
 
     for name, module in iter_candidate_linear_modules(model):
-        def make_hook(name_):
-            def hook(_, __, output):
-                add_cov(name_, output)
-            return hook
+        def make_hook(layer_name):
+            return lambda _, __, output, name=layer_name: add_cov(name, output)
         hooks.append(module.register_forward_hook(make_hook(name)))
 
     print(f"Registered hooks on {len(hooks)} layers (architecture: {model.__class__.__name__})")
@@ -156,9 +157,12 @@ def main():
     for h in hooks:
         h.remove()
 
-    # Save statistics
-    print(f"Saving Y^T Y stats for {len(yty)} modules to {args.out}")
-    torch.save(dict(yty), args.out)
+    # Move to CPU and save statistics
+    print("Moving statistics to CPU...")
+    yty_cpu = {k: v.cpu() for k, v in yty.items()}
+    
+    print(f"Saving Y^T Y stats for {len(yty_cpu)} modules to {args.out}")
+    torch.save(yty_cpu, args.out)
     print(f"Processed {total_tokens} total tokens")
     print("Done!")
 
