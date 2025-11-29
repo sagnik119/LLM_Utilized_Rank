@@ -114,6 +114,9 @@ def main():
     print("-" * 80)
     
     for name, C in sorted(yty_map.items()):
+        # Convert to float32 for eigendecomposition (eigvalsh doesn't support bf16)
+        C = C.float()
+        
         r, eigvals, cum = compute_rank_from_energy(C, args.energy)
         
         d_out = C.shape[0]
